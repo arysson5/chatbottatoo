@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: evolution_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: evolution
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution -d evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: evolution_redis
+    restart: always
+    volumes:
+      - evolution_redis:/data
+
+  evolution-api:
+    container_name: evolution_api
+    # v2.1.1 (atendai) tem bug: QR retorna {"count":0} — corrigido em v2.3.7+
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - evolution_instances:/evolution/instances
+
+  web:
+    container_name: briza_web
+    image: node:22-bookworm-slim
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - evolution-api
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/app
+    environment:
+      EVOLUTION_BASE_URL: http://evolution-api:8080
+      WEBHOOK_PUBLIC_URL: http://web:3000
+      EVOLUTION_GLOBAL_API_KEY: ${AUTHENTICATION_API_KEY}
+    command: sh -c "npm install --silent 2>/dev/null; npm run dev -- --hostname 0.0.0.0"
+
+volumes:
+  evolution_instances:
+  evolution_postgres:
+  evolution_redis:

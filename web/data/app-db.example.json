@@ -1,0 +1,44 @@
+{
+  "auth": {
+    "passwordHash": "",
+    "sessionToken": ""
+  },
+  "settings": {
+    "targetNumber": "",
+    "managedNumbers": [],
+    "handoffNumber": "",
+    "secretaryNumbers": [],
+    "welcomeMessage": "Olá! Bem-vindo ao atendimento automático.",
+    "projectPrompt": "Me conta: qual é o tipo do seu projeto?",
+    "catalogPrompt": "Envie os números das áreas que deseja tatuar.",
+    "pixFixedAmount": "R$ 75,00",
+    "pixKey": "",
+    "pixHolderName": "",
+    "pixInstructions": "Envie o comprovante do PIX após realizar o pagamento do sinal.",
+    "scheduling": {
+      "slotDurationMinutes": 120,
+      "daysAhead": 14,
+      "workingHours": [
+        { "day": 1, "start": "10:00", "end": "19:00" },
+        { "day": 2, "start": "10:00", "end": "19:00" },
+        { "day": 3, "start": "10:00", "end": "19:00" },
+        { "day": 4, "start": "10:00", "end": "19:00" },
+        { "day": 5, "start": "10:00", "end": "19:00" },
+        { "day": 6, "start": "10:00", "end": "19:00" }
+      ]
+    },
+    "googleCalendar": {
+      "calendarId": "primary",
+      "refreshToken": "",
+      "connectedAt": ""
+    }
+  },
+  "pricing": [],
+  "leads": [],
+  "leadOutcomes": [],
+  "mutedLeadNumbers": [],
+  "pendingSchedules": [],
+  "pendingPayments": [],
+  "appointments": [],
+  "usedPixTransactionIds": []
+}
