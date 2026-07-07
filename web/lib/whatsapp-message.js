@@ -74,3 +74,32 @@ export function jidToDialable(remoteJid) {
   if (!/^\d+$/.test(base)) return null;
   return base;
 }
+
+/**
+ * Resolve o número do remetente em payloads Evolution/Baileys (inclui @lid e participantAlt).
+ * Ignora grupos (@g.us).
+ * @param {Record<string, unknown> | null | undefined} key
+ * @returns {string | null}
+ */
+export function resolveInboundDialable(key) {
+  if (!key || typeof key !== "object") return null;
+
+  const remoteJid = typeof key.remoteJid === "string" ? key.remoteJid : "";
+  if (remoteJid.endsWith("@g.us")) return null;
+
+  const candidates = [
+    remoteJid,
+    typeof key.remoteJidAlt === "string" ? key.remoteJidAlt : "",
+    typeof key.participant === "string" ? key.participant : "",
+    typeof key.participantAlt === "string" ? key.participantAlt : "",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate.endsWith("@g.us")) continue;
+    if (!candidate.endsWith("@s.whatsapp.net")) continue;
+    const dialable = jidToDialable(candidate);
+    if (dialable) return dialable;
+  }
+
+  return null;
+}

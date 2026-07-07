@@ -30,14 +30,61 @@ const WORD_TO_NUMBER = {
 
 /**
  * @param {string} text
- * @returns {number | null}
+ * @returns {string}
  */
-function wordToNumber(text) {
-  const normalized = String(text || "")
+function normalizeWord(text) {
+  return String(text || "")
     .trim()
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 0; j <= n; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Aceita typos comuns (ex.: "ptineiro" → "primeiro").
+ * @param {string} text
+ * @param {string[]} candidates
+ * @param {number} maxDist
+ * @returns {boolean}
+ */
+function wordMatchesWithTypo(text, candidates, maxDist = 2) {
+  const word = normalizeWord(text);
+  if (!word) return false;
+  return candidates.some((candidate) => {
+    const target = normalizeWord(candidate);
+    if (word === target) return true;
+    if (Math.abs(word.length - target.length) > maxDist) return false;
+    return levenshtein(word, target) <= maxDist;
+  });
+}
+
+/**
+ * @param {string} text
+ * @returns {number | null}
+ */
+function wordToNumber(text) {
+  const normalized = normalizeWord(text);
   if (WORD_TO_NUMBER[normalized] !== undefined) return WORD_TO_NUMBER[normalized];
   const digit = normalized.match(/^(\d+)/);
   if (digit) return Number(digit[1]);
@@ -66,6 +113,10 @@ export function matchesMenuOption(text, optionId) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 
+  if (/^\d+$/.test(normalized)) {
+    return Number(normalized) === optionId;
+  }
+
   const patternsByOption = {
     1: [/^(1|1\.|agendar|quero agendar|nova tattoo|nova|novo)$/, /^(um|uma|primeiro|primeira)$/],
     2: [/^(2|2\.|tirar duvida|duvida|dúvida|reformar|reforma)$/, /^(dois|duas|segundo|segunda)$/],
@@ -76,7 +127,14 @@ export function matchesMenuOption(text, optionId) {
   if (matchesAnyPattern(normalized, patterns)) return true;
 
   const wordNum = wordToNumber(normalized);
-  return wordNum === optionId;
+  if (wordNum === optionId) return true;
+
+  const wordsByOption = {
+    1: ["um", "uma", "primeiro", "primeira"],
+    2: ["dois", "duas", "segundo", "segunda"],
+    3: ["tres", "terceiro", "terceira"],
+  };
+  return wordMatchesWithTypo(normalized, wordsByOption[optionId] || []);
 }
 
 /**

@@ -1,0 +1,90 @@
+name: Deploy Verify
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Testes unitários
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Jest (CI)
+        run: npm run test:unit
+
+  e2e-tests:
+    name: Testes E2E (Playwright)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Instalar browsers Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright (CI)
+        run: npm run test:e2e
+        env:
+          CI: "true"
+
+  docker-verify:
+    name: Stack Docker + fluxo webhook
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Criar .env mínimo para Evolution
+        run: |
+          cp .env.example .env
+          sed -i 's/altere-esta-chave-em-producao/ci-test-api-key/g' .env
+          sed -i 's/altere-senha-em-producao/ci-test-password/g' .env
+          grep -q 'ci-test-api-key' .env && grep -q 'ci-test-password' .env
+
+      - name: Subir stack e aguardar healthchecks
+        run: docker compose up -d --wait
+        timeout-minutes: 10
+
+      - name: Verificação pós-deploy (verify profile)
+        run: docker compose --profile verify run --rm verify
+        timeout-minutes: 15
+
+      - name: Logs em caso de falha
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Derrubar stack
+        if: always()
+        run: docker compose down -v

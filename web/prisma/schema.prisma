@@ -1,0 +1,170 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AppAuth {
+  id           Int    @id @default(1)
+  passwordHash String @default("") @map("password_hash")
+  sessionToken String @default("") @map("session_token")
+
+  @@map("app_auth")
+}
+
+model AppSettings {
+  id              Int    @id @default(1)
+  targetNumber    String @default("") @map("target_number")
+  handoffNumber   String @default("") @map("handoff_number")
+  welcomeMessage  String @default("") @map("welcome_message")
+  projectPrompt   String @default("") @map("project_prompt")
+  catalogPrompt   String @default("") @map("catalog_prompt")
+  pixFixedAmount  String @default("") @map("pix_fixed_amount")
+  pixKey          String @default("") @map("pix_key")
+  pixHolderName   String @default("") @map("pix_holder_name")
+  pixInstructions String @default("") @map("pix_instructions")
+  scheduling      Json   @default("{}")
+  googleCalendar  Json   @default("{}") @map("google_calendar")
+
+  @@map("app_settings")
+}
+
+model ManagedNumber {
+  id        Int    @id @default(autoincrement())
+  number    String
+  name      String @default("")
+  sortOrder Int    @default(0) @map("sort_order")
+
+  @@map("managed_numbers")
+}
+
+model SecretaryNumber {
+  id        Int    @id @default(autoincrement())
+  number    String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  @@map("secretary_numbers")
+}
+
+model PricingArea {
+  id          Int    @id @default(autoincrement())
+  area        Int    @unique
+  areaLabel   String @default("") @map("area_label")
+  tattooNova  String @default("") @map("tattoo_nova")
+  complemento String @default("")
+  reforma     String @default("")
+
+  @@map("pricing_areas")
+}
+
+model Lead {
+  id               Int      @id @default(autoincrement())
+  number           String
+  projectType      String   @default("") @map("project_type")
+  handoffNumber    String   @default("") @map("handoff_number")
+  selectedAreas    Json     @default("[]") @map("selected_areas")
+  estimatedTotal   Float    @default(0) @map("estimated_total")
+  hasPhotos        Boolean  @default(false) @map("has_photos")
+  originNumber     String   @default("") @map("origin_number")
+  originNumberName String   @default("") @map("origin_number_name")
+  status           String   @default("pending_handoff")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([number])
+  @@index([createdAt])
+  @@map("leads")
+}
+
+model LeadOutcome {
+  id                 Int       @id @default(autoincrement())
+  number             String
+  clientName         String    @default("") @map("client_name")
+  outcome            String
+  selectedAreas      Json      @default("[]") @map("selected_areas")
+  estimatedTotal     Float     @default(0) @map("estimated_total")
+  quoteIssuedAt      DateTime? @map("quote_issued_at")
+  quoteExpiresAt     DateTime? @map("quote_expires_at")
+  expiryNoticeSentAt DateTime? @map("expiry_notice_sent_at")
+  instance           String    @default("")
+  originNumber       String    @default("") @map("origin_number")
+  originNumberName   String    @default("") @map("origin_number_name")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@index([number])
+  @@index([createdAt])
+  @@map("lead_outcomes")
+}
+
+model MutedLead {
+  number    String   @id
+  reason    String   @default("handoff")
+  mutedAt   DateTime @map("muted_at")
+  expiresAt DateTime @map("expires_at")
+
+  @@map("muted_leads")
+}
+
+model PendingSchedule {
+  number    String   @id
+  data      Json     @default("{}")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("pending_schedules")
+}
+
+model PendingPayment {
+  number    String   @id
+  data      Json     @default("{}")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("pending_payments")
+}
+
+model PendingInteraction {
+  number    String
+  step      String
+  data      Json     @default("{}")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  expiresAt DateTime? @map("expires_at")
+
+  @@id([number, step])
+  @@index([number])
+  @@map("pending_interactions")
+}
+
+model Appointment {
+  id                    Int       @id @default(autoincrement())
+  number                String
+  clientName            String    @default("") @map("client_name")
+  clientPhone           String    @default("") @map("client_phone")
+  tattooLocation        String    @default("") @map("tattoo_location")
+  slotStart             DateTime? @map("slot_start")
+  slotEnd               DateTime? @map("slot_end")
+  slotLabel             String    @default("") @map("slot_label")
+  calendarEventId       String    @default("") @map("calendar_event_id")
+  pixPaidAt             DateTime? @map("pix_paid_at")
+  amountPaid            Float     @default(0) @map("amount_paid")
+  amountRequired        Float     @default(0) @map("amount_required")
+  status                String    @default("confirmed")
+  selectedAreas         Json      @default("[]") @map("selected_areas")
+  estimatedTotal        Float     @default(0) @map("estimated_total")
+  pixVerificationMethod String    @default("") @map("pix_verification_method")
+  pixTransactionId      String    @default("") @map("pix_transaction_id")
+  manualAmountUsed      Boolean   @default(false) @map("manual_amount_used")
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  @@index([number])
+  @@index([createdAt])
+  @@map("appointments")
+}
+
+model UsedPixTransaction {
+  transactionId String   @id @map("transaction_id")
+  number        String
+  usedAt        DateTime @default(now()) @map("used_at")
+
+  @@map("used_pix_transactions")
+}

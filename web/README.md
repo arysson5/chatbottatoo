@@ -23,7 +23,6 @@ Preencha no `web/.env.local`:
 - `EVOLUTION_GLOBAL_API_KEY`: API key global da Evolution
 - `WEBHOOK_PUBLIC_URL`: URL pública/base do web app (em dev pode ser `http://host.docker.internal:3000`)
 - `EVOLUTION_MANAGER_URL`: opcional, URL do manager
-- `TEST_TARGET_NUMBER`: número fixo autorizado no código (modo atual)
 
 ## 3) Instalar dependências do frontend
 

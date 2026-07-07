@@ -31,9 +31,18 @@ import {
 } from "@/lib/human-handoff";
 import { detectFlowContext, getFlowReminderMessage } from "@/lib/flow-context";
 import { resolveOriginFromInstance } from "@/lib/managed-numbers";
+import { resolveInboundNumber } from "@/lib/evolution-jid";
+import {
+  hydrateInteractionMaps,
+  persistMainMenu,
+  persistCatalogAreas,
+  persistPostQuote,
+  persistHandoffAreas,
+  persistHandoffPhotos,
+  clearMenuFlow,
+  clearInteraction,
+} from "@/lib/flow-interaction-store";
 
-const DEFAULT_TARGET_NUMBER = process.env.TEST_TARGET_NUMBER?.trim() || "5511950869685";
-const LOCK_TARGET_TO_INITIAL = true;
 const DEFAULT_WELCOME_MESSAGE = `Fala, meu amigo! Tudo certo? 🤝
 Aqui é o Matheus Brizza, especialista em Neo Tribal e Geométrico 🔥
 Também trabalho com Fine Line, Blackwork e outros estilos.
@@ -56,6 +65,17 @@ const pendingHandoffPhotosByNumber = new Map();
 const recentBotOutboundTextByNumber = new Map();
 const recentBotOutboundMediaByNumber = new Map();
 const QUOTE_VALIDITY_DAYS = 7;
+const MENU_TTL_MS = 24 * 60 * 60 * 1000;
+
+function getInteractionMaps() {
+  return {
+    pendingPollByNumber,
+    pendingCatalogAreasByNumber,
+    pendingPostQuoteChoiceByNumber,
+    pendingHandoffAreasByNumber,
+    pendingHandoffPhotosByNumber,
+  };
+}
 
 /**
  * @param {string} value
@@ -63,17 +83,6 @@ const QUOTE_VALIDITY_DAYS = 7;
  */
 function digitsOnly(value) {
   return String(value || "").replace(/\D/g, "");
-}
-
-/**
- * @param {string} number
- * @param {string} targetNumber
- * @returns {boolean}
- */
-function isTargetNumber(number, targetNumber) {
-  const target = digitsOnly(targetNumber);
-  if (!target) return true;
-  return digitsOnly(number) === target;
 }
 
 function normalizeBase(url) {
@@ -133,13 +142,9 @@ function hasActiveFlow(number, db) {
 /**
  * @param {string} number
  */
-function clearFlowState(number) {
-  pendingPollByNumber.delete(number);
-  pendingCatalogAreasByNumber.delete(number);
-  pendingPostQuoteChoiceByNumber.delete(number);
-  pendingHandoffAreasByNumber.delete(number);
-  pendingHandoffPhotosByNumber.delete(number);
-  clearSchedulingFlows(number);
+async function clearFlowState(number) {
+  await clearMenuFlow(number, getInteractionMaps());
+  await clearSchedulingFlows(number);
 }
 
 /**
@@ -635,8 +640,8 @@ function markCatalogSent(number) {
 function hasPendingPoll(number) {
   const timestamp = pendingPollByNumber.get(number);
   if (typeof timestamp !== "number") return false;
-  // Expira pendencia para evitar disparos tardios de eventos nao relacionados.
-  if (Date.now() - timestamp > 10 * 60_000) {
+  // Expira pendência para evitar disparos tardios de eventos não relacionados.
+  if (Date.now() - timestamp > MENU_TTL_MS) {
     pendingPollByNumber.delete(number);
     return false;
   }
@@ -809,7 +814,7 @@ function getSinglePendingPollNumber() {
   const valid = [];
   for (const [number, timestamp] of pendingPollByNumber.entries()) {
     if (typeof timestamp !== "number") continue;
-    if (now - timestamp > 10 * 60_000) {
+    if (now - timestamp > MENU_TTL_MS) {
       pendingPollByNumber.delete(number);
       continue;
     }
@@ -853,9 +858,7 @@ export async function POST(request) {
   }
 
   const db = await readDb();
-  const configuredTargetNumber = LOCK_TARGET_TO_INITIAL
-    ? DEFAULT_TARGET_NUMBER
-    : db?.settings?.targetNumber?.trim() || DEFAULT_TARGET_NUMBER;
+  hydrateInteractionMaps(db, getInteractionMaps());
   const handoffNumber = db?.settings?.handoffNumber?.trim() || "";
   const settings = db?.settings || {};
   const welcomeMessage =
@@ -883,7 +886,7 @@ export async function POST(request) {
       const fallbackPendingNumber =
         !mappedNumber && !updateNumber ? getSinglePendingPollNumber() : "";
       const number = mappedNumber || updateNumber || fallbackPendingNumber;
-      if (!number || !isTargetNumber(number, configuredTargetNumber)) continue;
+      if (!number) continue;
       const matchedPendingPoll = hasPendingPoll(number) && updateLooksLikePollInteraction(updateObj);
       console.log("[webhook] messages_update", {
         number,
@@ -906,14 +909,12 @@ export async function POST(request) {
     const key = entry.key && typeof entry.key === "object" ? /** @type {Record<string, unknown>} */ (entry.key) : null;
     if (!key) continue;
 
-    const remoteJid = typeof key.remoteJid === "string" ? key.remoteJid : "";
-    const remoteJidAlt = typeof key.remoteJidAlt === "string" ? key.remoteJidAlt : "";
-    const jidSource = remoteJid.endsWith("@s.whatsapp.net") ? remoteJid : remoteJidAlt;
-    if (!jidSource.endsWith("@s.whatsapp.net")) continue;
-
-    const number = jidToDialable(jidSource);
+    const number = await resolveInboundNumber(
+      key,
+      /** @type {Record<string, unknown>} */ (entry),
+      { baseUrl: evolutionBase, instance, apiKey },
+    );
     if (!number) continue;
-    if (!isTargetNumber(number, configuredTargetNumber)) continue;
     if (mutedLeadNumbers.has(number)) {
       console.log("[webhook] muted_number_ignored", { number });
       continue;
@@ -942,7 +943,7 @@ export async function POST(request) {
         const likelyBot = isLikelyBotMessage(number, text, hasPhotoInMessage);
         if (!likelyBot) {
           await muteBotForLead(number, "human_takeover_mid_flow");
-          clearFlowState(number);
+          await clearFlowState(number);
           console.log("[webhook] human_takeover_detected", { number });
         }
       }
@@ -1182,13 +1183,15 @@ export async function POST(request) {
         `Perfeito, ${clientName}! ✅\nSe quiser, você pode me enviar fotos da tattoo atual para ajudar na avaliação do especialista 📸\nSe preferir seguir sem foto, é só responder normalmente que eu continuo.`,
       );
       pendingHandoffAreasByNumber.delete(number);
-      pendingHandoffPhotosByNumber.set(number, {
+      const handoffPhotoData = {
         projectType,
         selectedAreas,
         total,
         breakdown,
         capturedAt: Date.now(),
-      });
+      };
+      await persistHandoffPhotos(number, handoffPhotoData, getInteractionMaps());
+      await clearInteraction(number, "handoff_areas");
       continue;
     }
 
@@ -1311,13 +1314,15 @@ Ação recomendada:
       );
       pendingCatalogAreasByNumber.delete(number);
       const quoteIssuedAtMs = Date.now();
-      pendingPostQuoteChoiceByNumber.set(number, {
+      const postQuoteData = {
         createdAt: quoteIssuedAtMs,
         quoteIssuedAtMs,
         quoteExpiresAtMs: quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
         selectedAreas,
         estimatedTotal: total,
-      });
+      };
+      await persistPostQuote(number, postQuoteData, getInteractionMaps());
+      await clearInteraction(number, "catalog_areas");
       resetConfusion(number);
       continue;
     }
@@ -1343,7 +1348,8 @@ Ação recomendada:
         resetConfusion(number);
         await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
         pendingPollByNumber.delete(number);
-        pendingCatalogAreasByNumber.set(number, Date.now());
+        await clearInteraction(number, "main_menu");
+        await persistCatalogAreas(number, getInteractionMaps());
         continue;
       }
       if (menuChoice === 2) {
@@ -1355,10 +1361,16 @@ Ação recomendada:
           number,
           "Perfeito! Para reforma, me envie os números das áreas da imagem (ex: 2, 6 e 9) para eu encaminhar seu lead completo ao especialista. ♻️",
         );
-        pendingHandoffAreasByNumber.set(number, { projectType: "reformar", createdAt: Date.now() });
+        await persistHandoffAreas(
+          number,
+          { projectType: "reformar", createdAt: Date.now() },
+          getInteractionMaps(),
+        );
         pendingPollByNumber.delete(number);
+        await clearInteraction(number, "main_menu");
         pendingHandoffPhotosByNumber.delete(number);
         pendingPostQuoteChoiceByNumber.delete(number);
+        await clearInteraction(number, "post_quote");
         continue;
       }
       if (menuChoice === 3) {
@@ -1370,10 +1382,16 @@ Ação recomendada:
           number,
           "Boa! Para complemento, me envie os números das áreas da imagem (ex: 3, 7 e 10) para eu encaminhar seu lead completo ao especialista. 🧩",
         );
-        pendingHandoffAreasByNumber.set(number, { projectType: "complementar", createdAt: Date.now() });
+        await persistHandoffAreas(
+          number,
+          { projectType: "complementar", createdAt: Date.now() },
+          getInteractionMaps(),
+        );
         pendingPollByNumber.delete(number);
+        await clearInteraction(number, "main_menu");
         pendingHandoffPhotosByNumber.delete(number);
         pendingPostQuoteChoiceByNumber.delete(number);
+        await clearInteraction(number, "post_quote");
         continue;
       }
 
@@ -1395,7 +1413,8 @@ Ação recomendada:
     ) {
       await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
       pendingPollByNumber.delete(number);
-      pendingCatalogAreasByNumber.set(number, Date.now());
+      await clearInteraction(number, "main_menu");
+      await persistCatalogAreas(number, getInteractionMaps());
       continue;
     }
 
@@ -1403,7 +1422,7 @@ Ação recomendada:
 
     if (normalizedText.includes("nova tattoo") || normalizedText === "novo") {
       await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
-      pendingCatalogAreasByNumber.set(number, Date.now());
+      await persistCatalogAreas(number, getInteractionMaps());
       continue;
     }
 
@@ -1460,7 +1479,7 @@ Ação recomendada:
       pendingPollByMessageId.set(`${instance}:${selectorResult.messageId}`, number);
     }
     if (selectorResult.ok) {
-      pendingPollByNumber.set(number, Date.now());
+      await persistMainMenu(number, getInteractionMaps());
     } else {
       await sendText(evolutionBase, instance, apiKey, number, SELECTOR_TEXT_FALLBACK);
     }

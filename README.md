@@ -48,19 +48,25 @@ cp web/.env.example web/.env.local
 
 Edite os arquivos e **substitua todas as chaves e senhas** por valores fortes de produção.
 
-3. Inicialize o banco de dados local:
+3. Inicialize o banco de dados local (fallback JSON):
 
 ```bash
 cp web/data/app-db.example.json web/data/app-db.json
 ```
 
-4. Suba os serviços:
+4. Suba os serviços (cria `briza_app`, roda migrations Prisma e sobe o Next):
 
 ```bash
 docker compose up -d
 ```
 
-5. Acesse:
+5. (Opcional) Importar dados do JSON para PostgreSQL:
+
+```bash
+docker compose exec web npm run db:seed
+```
+
+6. Acesse:
 
 | Serviço | URL |
 |---------|-----|
@@ -81,6 +87,9 @@ cd web
 npm install
 cp .env.example .env.local
 cp data/app-db.example.json data/app-db.json
+# Opcional: Postgres local
+# DATABASE_URL=postgresql://evolution:evolution@localhost:5432/briza_app
+npm run db:provision && npm run db:migrate
 npm run dev
 ```
 
@@ -104,6 +113,19 @@ npm run dev
 | `GEMINI_API_KEY` | Google Gemini (opcional, melhora NLP e comprovantes) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth Calendar (opcional) |
 | `APP_PUBLIC_URL` | URL pública do painel |
+| `DATABASE_URL` | PostgreSQL `briza_app` (automático no Docker; omitir = fallback JSON) |
+
+## Banco de dados (PostgreSQL)
+
+O painel usa o banco **`briza_app`** no mesmo PostgreSQL da Evolution (container `postgres`). O JSON `web/data/app-db.json` permanece como **fallback** se `DATABASE_URL` não estiver definida ou se o Postgres falhar.
+
+| Comando | Descrição |
+|---------|-----------|
+| `npm run db:provision` | Cria o banco `briza_app` se não existir |
+| `npm run db:migrate` | Aplica migrations Prisma |
+| `npm run db:seed` | Importa `app-db.json` para o Postgres (use `--force` para sobrescrever) |
+
+Schema e migrations em [`web/prisma/`](web/prisma/).
 
 ## Segurança
 
