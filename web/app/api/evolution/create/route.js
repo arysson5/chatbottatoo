@@ -65,7 +65,7 @@ export async function POST(request) {
       enabled: true,
       url: webhookUrl,
       byEvents: false,
-      events: ["MESSAGES_UPSERT"],
+      events: ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE", "CALL"],
     },
   };
 

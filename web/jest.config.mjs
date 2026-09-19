@@ -22,6 +22,7 @@ const customJestConfig = {
     "lib/flows/flow-store.js",
     "lib/message-media.js",
     "lib/currency.js",
+    "lib/webhook-guard.js",
   ],
   coverageDirectory: "coverage",
   testTimeout: 15000,

@@ -1,4 +1,5 @@
 import { updateDb } from "@/lib/simple-db";
+import { makeScopeKey, rowMatchesScope } from "@/lib/scope-key";
 
 export const INTERACTION_STEPS = {
   MAIN_MENU: "main_menu",
@@ -23,11 +24,14 @@ export function isInteractionExpired(row) {
  * @param {object} db
  * @param {string} number
  * @param {string} step
+ * @param {string} [instance]
  * @returns {object | null}
  */
-export function getInteraction(db, number, step) {
+export function getInteraction(db, number, step, instance = "") {
   const list = Array.isArray(db?.pendingInteractions) ? db.pendingInteractions : [];
-  const row = list.find((item) => item?.number === number && item?.step === step);
+  const row = list.find(
+    (item) => rowMatchesScope(item, number, instance) && item?.step === step,
+  );
   if (!row || isInteractionExpired(row)) return null;
   return row.data && typeof row.data === "object" ? row.data : {};
 }
@@ -35,27 +39,31 @@ export function getInteraction(db, number, step) {
 /**
  * @param {object} db
  * @param {string} number
+ * @param {string} [instance]
  * @returns {boolean}
  */
-export function hasMainMenuPending(db, number) {
-  return Boolean(getInteraction(db, number, INTERACTION_STEPS.MAIN_MENU));
+export function hasMainMenuPending(db, number, instance = "") {
+  return Boolean(getInteraction(db, number, INTERACTION_STEPS.MAIN_MENU, instance));
 }
 
 /**
  * @param {string} number
  * @param {string} step
  * @param {object} data
+ * @param {string} [instance]
  */
-export async function upsertInteraction(number, step, data) {
+export async function upsertInteraction(number, step, data, instance = "") {
+  const inst = String(instance || "").trim();
   const expiresAt = new Date(Date.now() + INTERACTION_TTL_MS).toISOString();
   await updateDb((draft) => {
     draft.pendingInteractions = Array.isArray(draft.pendingInteractions)
       ? draft.pendingInteractions
       : [];
     const idx = draft.pendingInteractions.findIndex(
-      (item) => item?.number === number && item?.step === step,
+      (item) => rowMatchesScope(item, number, inst) && item?.step === step,
     );
     const row = {
+      instance: inst,
       number,
       step,
       data: data && typeof data === "object" ? data : {},
@@ -75,11 +83,12 @@ export async function upsertInteraction(number, step, data) {
 /**
  * @param {string} number
  * @param {string} [step]
+ * @param {string} [instance]
  */
-export async function clearInteraction(number, step) {
+export async function clearInteraction(number, step, instance = "") {
   await updateDb((draft) => {
     draft.pendingInteractions = (draft.pendingInteractions || []).filter((item) => {
-      if (item?.number !== number) return true;
+      if (!rowMatchesScope(item, number, instance)) return true;
       if (!step) return false;
       return item?.step !== step;
     });
@@ -89,13 +98,15 @@ export async function clearInteraction(number, step) {
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  */
-export async function clearAllInteractions(number) {
-  await clearInteraction(number);
+export async function clearAllInteractions(number, instance = "") {
+  await clearInteraction(number, undefined, instance);
 }
 
 /**
  * Hidrata Maps em memória a partir do snapshot do banco (sobrevive a restart).
+ * Maps usam scopeKey = instance:number
  * @param {object} db
  * @param {object} maps
  */
@@ -108,22 +119,23 @@ export function hydrateInteractionMaps(db, maps) {
       typeof data.createdAt === "number"
         ? data.createdAt
         : new Date(row.updatedAt || Date.now()).getTime();
+    const scopeKey = makeScopeKey(row.instance || "", row.number);
 
     switch (row.step) {
       case INTERACTION_STEPS.MAIN_MENU:
-        maps.pendingPollByNumber.set(row.number, createdAt);
+        maps.pendingPollByNumber.set(scopeKey, createdAt);
         break;
       case INTERACTION_STEPS.CATALOG_AREAS:
-        maps.pendingCatalogAreasByNumber.set(row.number, createdAt);
+        maps.pendingCatalogAreasByNumber.set(scopeKey, createdAt);
         break;
       case INTERACTION_STEPS.POST_QUOTE:
-        maps.pendingPostQuoteChoiceByNumber.set(row.number, data);
+        maps.pendingPostQuoteChoiceByNumber.set(scopeKey, data);
         break;
       case INTERACTION_STEPS.HANDOFF_AREAS:
-        maps.pendingHandoffAreasByNumber.set(row.number, data);
+        maps.pendingHandoffAreasByNumber.set(scopeKey, data);
         break;
       case INTERACTION_STEPS.HANDOFF_PHOTOS:
-        maps.pendingHandoffPhotosByNumber.set(row.number, data);
+        maps.pendingHandoffPhotosByNumber.set(scopeKey, data);
         break;
       default:
         break;
@@ -134,62 +146,74 @@ export function hydrateInteractionMaps(db, maps) {
 /**
  * @param {string} number
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function persistMainMenu(number, maps) {
+export async function persistMainMenu(number, maps, instance = "") {
   const createdAt = Date.now();
-  maps.pendingPollByNumber.set(number, createdAt);
-  await upsertInteraction(number, INTERACTION_STEPS.MAIN_MENU, { createdAt });
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingPollByNumber.set(scopeKey, createdAt);
+  await upsertInteraction(number, INTERACTION_STEPS.MAIN_MENU, { createdAt }, instance);
 }
 
 /**
  * @param {string} number
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function persistCatalogAreas(number, maps) {
+export async function persistCatalogAreas(number, maps, instance = "") {
   const createdAt = Date.now();
-  maps.pendingCatalogAreasByNumber.set(number, createdAt);
-  await upsertInteraction(number, INTERACTION_STEPS.CATALOG_AREAS, { createdAt });
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingCatalogAreasByNumber.set(scopeKey, createdAt);
+  await upsertInteraction(number, INTERACTION_STEPS.CATALOG_AREAS, { createdAt }, instance);
 }
 
 /**
  * @param {string} number
  * @param {object} data
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function persistPostQuote(number, data, maps) {
-  maps.pendingPostQuoteChoiceByNumber.set(number, data);
-  await upsertInteraction(number, INTERACTION_STEPS.POST_QUOTE, data);
+export async function persistPostQuote(number, data, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingPostQuoteChoiceByNumber.set(scopeKey, data);
+  await upsertInteraction(number, INTERACTION_STEPS.POST_QUOTE, data, instance);
 }
 
 /**
  * @param {string} number
  * @param {object} data
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function persistHandoffAreas(number, data, maps) {
-  maps.pendingHandoffAreasByNumber.set(number, data);
-  await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS, data);
+export async function persistHandoffAreas(number, data, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingHandoffAreasByNumber.set(scopeKey, data);
+  await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS, data, instance);
 }
 
 /**
  * @param {string} number
  * @param {object} data
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function persistHandoffPhotos(number, data, maps) {
-  maps.pendingHandoffPhotosByNumber.set(number, data);
-  await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_PHOTOS, data);
+export async function persistHandoffPhotos(number, data, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingHandoffPhotosByNumber.set(scopeKey, data);
+  await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_PHOTOS, data, instance);
 }
 
 /**
  * @param {string} number
  * @param {object} maps
+ * @param {string} [instance]
  */
-export async function clearMenuFlow(number, maps) {
-  maps.pendingPollByNumber.delete(number);
-  maps.pendingCatalogAreasByNumber.delete(number);
-  maps.pendingPostQuoteChoiceByNumber.delete(number);
-  maps.pendingHandoffAreasByNumber.delete(number);
-  maps.pendingHandoffPhotosByNumber.delete(number);
-  await clearAllInteractions(number);
+export async function clearMenuFlow(number, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  maps.pendingPollByNumber.delete(scopeKey);
+  maps.pendingCatalogAreasByNumber.delete(scopeKey);
+  maps.pendingPostQuoteChoiceByNumber.delete(scopeKey);
+  maps.pendingHandoffAreasByNumber.delete(scopeKey);
+  maps.pendingHandoffPhotosByNumber.delete(scopeKey);
+  await clearAllInteractions(number, instance);
 }

@@ -83,7 +83,8 @@ services:
       WEBHOOK_PUBLIC_URL: http://web:3000
       EVOLUTION_GLOBAL_API_KEY: ${AUTHENTICATION_API_KEY}
       DATABASE_URL: postgresql://evolution:${POSTGRES_PASSWORD:-evolution}@postgres:5432/briza_app
-    command: sh -c "npm install --silent 2>/dev/null && npm run db:provision && npm run db:migrate && npm run dev -- --hostname 0.0.0.0"
+    # db:seed só importa se Postgres estiver vazio e app-db.json tiver config (nunca apaga dados existentes)
+    command: sh -c "npm install --silent 2>/dev/null && npm run db:provision && npm run db:migrate && npm run db:seed && npm run dev -- --hostname 0.0.0.0"
     healthcheck:
       test:
         [

@@ -6,8 +6,8 @@ import { askClientName, startClientDataFlow } from "@/lib/flows/client-data-flow
 import { resetConfusion } from "@/lib/human-handoff";
 
 export async function handleFaqFlow(ctx) {
-  const { number, text, db, sendText, clientName } = ctx;
-  const schedule = getPendingSchedule(db, number);
+  const { number, text, db, sendText, clientName, instance = "" } = ctx;
+  const schedule = getPendingSchedule(db, number, instance);
   if (!schedule || schedule.step !== "faq") return false;
 
   const trimmed = String(text || "").trim();
@@ -26,16 +26,22 @@ export async function handleFaqFlow(ctx) {
   });
 
   if (choice === 1 || /^(agendar|quero agendar|marcar)$/.test(trimmed.toLowerCase())) {
-    resetConfusion(number);
+    resetConfusion(number, instance);
     const quoteContext = {
       selectedAreas: schedule.selectedAreas || [],
       estimatedTotal: schedule.estimatedTotal || 0,
       quoteIssuedAt: schedule.quoteIssuedAt || null,
       quoteExpiresAt: schedule.quoteExpiresAt || null,
-      instance: schedule.instance || "",
+      instance: schedule.instance || instance || "",
     };
-    await removePendingSchedule(number);
-    await startClientDataFlow(quoteContext, number, clientName, schedule.instance || "", ctx.pricingTable);
+    await removePendingSchedule(number, instance);
+    await startClientDataFlow(
+      quoteContext,
+      number,
+      clientName,
+      schedule.instance || instance || "",
+      ctx.pricingTable,
+    );
     await askClientName(sendText, number, clientName);
     return true;
   }
@@ -62,14 +68,18 @@ export async function handleFaqFlow(ctx) {
 }
 
 export async function startFaqFlow(quoteContext, number, clientName, instance, sendText) {
-  await upsertPendingSchedule(number, {
-    step: "faq",
-    clientName,
+  await upsertPendingSchedule(
+    number,
+    {
+      step: "faq",
+      clientName,
+      instance,
+      selectedAreas: quoteContext.selectedAreas || [],
+      estimatedTotal: quoteContext.estimatedTotal || 0,
+      quoteIssuedAt: quoteContext.quoteIssuedAt || null,
+      quoteExpiresAt: quoteContext.quoteExpiresAt || null,
+    },
     instance,
-    selectedAreas: quoteContext.selectedAreas || [],
-    estimatedTotal: quoteContext.estimatedTotal || 0,
-    quoteIssuedAt: quoteContext.quoteIssuedAt || null,
-    quoteExpiresAt: quoteContext.quoteExpiresAt || null,
-  });
+  );
   await sendText(number, FAQ_MENU_TEXT);
 }

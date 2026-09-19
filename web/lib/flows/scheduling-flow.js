@@ -8,8 +8,8 @@ import { filterSlots, paginateSlots, formatSlotsMessage } from "@/lib/slot-filte
 import { processConfusionReply, resetConfusion } from "@/lib/human-handoff";
 
 export async function handleSchedulingFlow(ctx) {
-  const { number, text, db, sendText, settings } = ctx;
-  const schedule = getPendingSchedule(db, number);
+  const { number, text, db, sendText, settings, instance = "" } = ctx;
+  const schedule = getPendingSchedule(db, number, instance);
   if (!schedule || schedule.step !== "slot_choice") return false;
 
   const allSlots = Array.isArray(schedule.allSlots) ? schedule.allSlots : [];
@@ -28,7 +28,7 @@ export async function handleSchedulingFlow(ctx) {
   if (chosenId) {
     const slot = visibleSlots.find((s) => s.id === chosenId);
     if (slot) {
-      resetConfusion(number);
+      resetConfusion(number, instance);
       return proceedToPix(ctx, schedule, slot);
     }
   }
@@ -42,7 +42,11 @@ export async function handleSchedulingFlow(ctx) {
       await sendText(number, "Não há mais horários nesta lista. Tente filtrar: ex. sexta, semana que vem.");
       return true;
     }
-    await upsertPendingSchedule(number, { ...schedule, visibleSlots: pageSlots, slotPage, slotHasMore: hasMore });
+    await upsertPendingSchedule(
+      number,
+      { ...schedule, visibleSlots: pageSlots, slotPage, slotHasMore: hasMore },
+      instance,
+    );
     await sendText(number, formatSlotsMessage(pageSlots, hasMore ? 'Digite "mais horários" para continuar.' : ""));
     return true;
   }
@@ -61,14 +65,18 @@ export async function handleSchedulingFlow(ctx) {
       return true;
     }
     const { pageSlots, hasMore } = paginateSlots(filtered, 0, 8);
-    await upsertPendingSchedule(number, {
-      ...schedule,
-      visibleSlots: pageSlots,
-      filteredSlots: filtered,
-      slotPage: 0,
-      slotHasMore: hasMore,
-      lastFilter: slotRequest,
-    });
+    await upsertPendingSchedule(
+      number,
+      {
+        ...schedule,
+        visibleSlots: pageSlots,
+        filteredSlots: filtered,
+        slotPage: 0,
+        slotHasMore: hasMore,
+        lastFilter: slotRequest,
+      },
+      instance,
+    );
     await sendText(number, formatSlotsMessage(pageSlots, hasMore ? 'Digite "mais horários" para ver mais neste filtro.' : ""));
     return true;
   }
@@ -78,13 +86,14 @@ export async function handleSchedulingFlow(ctx) {
     processConfusionReply(
       number,
       `Não entendi. Escolha pelo número ou diga "sexta", "semana que vem".\n\n${formatSlotsMessage(visibleSlots)}`,
+      instance,
     ),
   );
   return true;
 }
 
 async function proceedToPix(ctx, schedule, slot) {
-  const { number, sendText, settings } = ctx;
+  const { number, sendText, settings, instance = "" } = ctx;
   const pixAmount = parseCurrencyToNumber(settings?.pixFixedAmount);
   const pixKey = settings?.pixKey?.trim() || "";
 
@@ -96,32 +105,40 @@ async function proceedToPix(ctx, schedule, slot) {
     return true;
   }
 
-  await upsertPendingSchedule(number, {
-    ...schedule,
-    step: "pix",
-    slotStart: slot.start,
-    slotEnd: slot.end,
-    slotLabel: slot.label,
-    slotId: slot.id,
-    pixStatus: "Aguardando pagamento",
-  });
+  await upsertPendingSchedule(
+    number,
+    {
+      ...schedule,
+      step: "pix",
+      slotStart: slot.start,
+      slotEnd: slot.end,
+      slotLabel: slot.label,
+      slotId: slot.id,
+      pixStatus: "Aguardando pagamento",
+    },
+    instance,
+  );
 
   const { upsertPendingPayment } = await import("@/lib/flows/flow-store");
-  await upsertPendingPayment(number, {
-    amountRequired: pixAmount,
-    amountPaid: 0,
-    pixKeyVerified: false,
-    slotStart: slot.start,
-    slotEnd: slot.end,
-    slotLabel: slot.label,
-    scheduleData: {
-      clientName: schedule.clientName || schedule.fullName,
-      clientPhone: schedule.clientPhone || number,
-      tattooLocation: schedule.tattooLocation,
-      selectedAreas: schedule.selectedAreas,
-      estimatedTotal: schedule.estimatedTotal,
+  await upsertPendingPayment(
+    number,
+    {
+      amountRequired: pixAmount,
+      amountPaid: 0,
+      pixKeyVerified: false,
+      slotStart: slot.start,
+      slotEnd: slot.end,
+      slotLabel: slot.label,
+      scheduleData: {
+        clientName: schedule.clientName || schedule.fullName,
+        clientPhone: schedule.clientPhone || number,
+        tattooLocation: schedule.tattooLocation,
+        selectedAreas: schedule.selectedAreas,
+        estimatedTotal: schedule.estimatedTotal,
+      },
     },
-  });
+    instance,
+  );
 
   const pixHolder = settings?.pixHolderName?.trim() || "";
   const pixInstructions = settings?.pixInstructions?.trim() || "";

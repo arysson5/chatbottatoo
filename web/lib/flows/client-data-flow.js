@@ -30,8 +30,8 @@ Origem: Bot Briza Tattoo`;
 }
 
 export async function handleClientDataFlow(ctx) {
-  const { number, text, db, sendText, settings } = ctx;
-  const schedule = getPendingSchedule(db, number);
+  const { number, text, db, sendText, settings, instance = "" } = ctx;
+  const schedule = getPendingSchedule(db, number, instance);
   if (!schedule || schedule.step === "slot_choice" || schedule.step === "pix" || schedule.step === "faq") {
     return false;
   }
@@ -46,13 +46,13 @@ export async function handleClientDataFlow(ctx) {
   const pricingTable = Array.isArray(ctx.pricingTable) ? ctx.pricingTable : [];
 
   if (schedule.step === "name") {
-    resetConfusion(number);
+    resetConfusion(number, instance);
     await upsertPendingSchedule(number, {
       ...schedule,
       step: "phone",
       fullName: trimmed,
       clientName: trimmed,
-    });
+    }, instance);
     await sendText(
       number,
       `Obrigado, ${trimmed}! 📱\nQual seu telefone para contato?\n(Pode dizer "é o mesmo número" se for este WhatsApp)`,
@@ -77,13 +77,14 @@ export async function handleClientDataFlow(ctx) {
           processConfusionReply(
             number,
             'Não entendi o telefone. Envie com DDD (ex: 11999998888) ou diga "é o mesmo número".',
+            instance,
           ),
         );
         return true;
       }
     }
 
-    resetConfusion(number);
+    resetConfusion(number, instance);
     const tattooLocation = formatTattooLocation(schedule.selectedAreas, pricingTable);
     const updated = {
       ...schedule,
@@ -92,7 +93,7 @@ export async function handleClientDataFlow(ctx) {
       clientName: schedule.fullName || schedule.clientName || "Cliente",
       tattooLocation,
     };
-    await upsertPendingSchedule(number, updated);
+    await upsertPendingSchedule(number, updated, instance);
 
     await sendToSecretaries(sendText, settings, buildLeadSummary({ ...updated, number }, settings));
 
@@ -101,14 +102,14 @@ export async function handleClientDataFlow(ctx) {
         number,
         "Recebi seus dados! ✅\nA agenda ainda não está conectada. A secretaria vai entrar em contato.",
       );
-      await removePendingSchedule(number);
+      await removePendingSchedule(number, instance);
       return true;
     }
 
     const allSlots = await listFreeSlots(settings?.scheduling);
     if (!allSlots.length) {
       await sendText(number, "Recebi seus dados! ✅\nNo momento não há horários disponíveis.");
-      await removePendingSchedule(number);
+      await removePendingSchedule(number, instance);
       return true;
     }
 
@@ -119,7 +120,7 @@ export async function handleClientDataFlow(ctx) {
       visibleSlots: pageSlots,
       slotPage: 0,
       slotHasMore: hasMore,
-    });
+    }, instance);
 
     await sendText(
       number,
@@ -147,7 +148,7 @@ export async function startClientDataFlow(quoteContext, number, clientName, inst
     quoteIssuedAt: quoteContext.quoteIssuedAt || null,
     quoteExpiresAt: quoteContext.quoteExpiresAt || null,
     tattooLocation,
-  });
+  }, instance);
 }
 
 export async function askClientName(sendText, number, clientName) {

@@ -1,3 +1,5 @@
+import { makeScopeKey, rowMatchesScope } from "@/lib/scope-key";
+
 export const HANDOFF_MUTE_DAYS = 7;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -6,17 +8,20 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * @param {string | object} entry
  * @param {object} [options]
  * @param {string} [options.fallbackMutedAt]
- * @returns {{ number: string, reason: string, mutedAt: string, expiresAt: string }}
+ * @param {string} [options.instance]
+ * @returns {{ instance: string, number: string, reason: string, mutedAt: string, expiresAt: string }}
  */
 export function normalizeMutedEntry(entry, options = {}) {
   const now = Date.now();
+  const defaultInstance = String(options.instance || "").trim();
   if (typeof entry === "string") {
     const mutedAtMs = options.fallbackMutedAt
       ? new Date(options.fallbackMutedAt).getTime()
       : now;
     const safeMutedAt = Number.isFinite(mutedAtMs) ? mutedAtMs : now;
     return {
-      number: entry,
+      instance: defaultInstance,
+      number: entry.replace(/\D/g, ""),
       reason: "legacy_mute",
       mutedAt: new Date(safeMutedAt).toISOString(),
       expiresAt: new Date(safeMutedAt + HANDOFF_MUTE_DAYS * MS_PER_DAY).toISOString(),
@@ -25,12 +30,14 @@ export function normalizeMutedEntry(entry, options = {}) {
 
   if (entry && typeof entry === "object") {
     const number = String(entry.number || "").replace(/\D/g, "");
+    const instance = String(entry.instance || defaultInstance || "").trim();
     const mutedAtMs = entry.mutedAt ? new Date(entry.mutedAt).getTime() : now;
     const safeMutedAt = Number.isFinite(mutedAtMs) ? mutedAtMs : now;
     const expiresAtMs = entry.expiresAt
       ? new Date(entry.expiresAt).getTime()
       : safeMutedAt + HANDOFF_MUTE_DAYS * MS_PER_DAY;
     return {
+      instance,
       number,
       reason: typeof entry.reason === "string" ? entry.reason : "handoff",
       mutedAt: new Date(safeMutedAt).toISOString(),
@@ -41,6 +48,7 @@ export function normalizeMutedEntry(entry, options = {}) {
   }
 
   return {
+    instance: defaultInstance,
     number: "",
     reason: "handoff",
     mutedAt: new Date(now).toISOString(),
@@ -55,7 +63,7 @@ export function normalizeMutedEntry(entry, options = {}) {
  */
 export function normalizeMutedList(list, leads = []) {
   if (!Array.isArray(list)) return [];
-  const byNumber = new Map();
+  const byScope = new Map();
 
   for (const raw of list) {
     let fallbackMutedAt = "";
@@ -65,27 +73,28 @@ export function normalizeMutedList(list, leads = []) {
     }
     const entry = normalizeMutedEntry(raw, { fallbackMutedAt });
     if (!entry.number) continue;
-    byNumber.set(entry.number, entry);
+    byScope.set(makeScopeKey(entry.instance, entry.number), entry);
   }
 
-  return [...byNumber.values()];
+  return [...byScope.values()];
 }
 
 /**
  * @param {object[]} list
  * @param {string} number
+ * @param {string} [instance]
  * @returns {boolean}
  */
-export function isMuteActive(list, number) {
+export function isMuteActive(list, number, instance = "") {
   const normalized = normalizeMutedList(list);
-  const entry = normalized.find((item) => item.number === number);
+  const entry = normalized.find((item) => rowMatchesScope(item, number, instance));
   if (!entry) return false;
   return Date.now() < new Date(entry.expiresAt).getTime();
 }
 
 /**
  * @param {object} db
- * @returns {{ activeMutedNumbers: Set<string>, expiredNumbers: string[] }}
+ * @returns {{ activeMutedNumbers: Set<string>, activeMutedScopes: Set<string>, activeMutedEntries: object[], expiredNumbers: string[] }}
  */
 export function splitActiveAndExpiredMutes(db) {
   const leads = Array.isArray(db?.leads) ? db.leads : [];
@@ -104,18 +113,19 @@ export function splitActiveAndExpiredMutes(db) {
 
   return {
     activeMutedNumbers: new Set(active.map((item) => item.number)),
+    activeMutedScopes: new Set(active.map((item) => makeScopeKey(item.instance, item.number))),
     activeMutedEntries: active,
     expiredNumbers: expired,
   };
 }
 
 /**
- * Remove mutes expirados e devolve números ainda silenciados.
+ * Remove mutes expirados e devolve scopes ainda silenciados.
  * @param {object} db
- * @returns {Promise<Set<string>>}
+ * @returns {Promise<Set<string>>} Set de scopeKeys instance:number
  */
 export async function resolveHandoffMutes(db, updateDb) {
-  const { activeMutedNumbers, activeMutedEntries, expiredNumbers } = splitActiveAndExpiredMutes(db);
+  const { activeMutedScopes, activeMutedEntries, expiredNumbers } = splitActiveAndExpiredMutes(db);
 
   if (expiredNumbers.length > 0) {
     await updateDb((draft) => {
@@ -127,27 +137,30 @@ export async function resolveHandoffMutes(db, updateDb) {
     }
   }
 
-  return activeMutedNumbers;
+  return activeMutedScopes;
 }
 
 /**
  * @param {object} draft
  * @param {string} number
  * @param {string} reason
+ * @param {string} [instance]
  */
-export function muteNumberInDraft(draft, number, reason) {
+export function muteNumberInDraft(draft, number, reason, instance = "") {
   const leads = Array.isArray(draft.leads) ? draft.leads : [];
   const current = normalizeMutedList(draft.mutedLeadNumbers || [], leads);
   const now = Date.now();
+  const inst = String(instance || "").trim();
   const nextEntry = {
+    instance: inst,
     number,
     reason,
     mutedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + HANDOFF_MUTE_DAYS * MS_PER_DAY).toISOString(),
   };
 
-  const withoutNumber = current.filter((item) => item.number !== number);
-  draft.mutedLeadNumbers = [...withoutNumber, nextEntry];
+  const without = current.filter((item) => !rowMatchesScope(item, number, inst));
+  draft.mutedLeadNumbers = [...without, nextEntry];
 
   for (const lead of draft.leads || []) {
     if (lead?.number === number && lead?.status === "pending_handoff") {

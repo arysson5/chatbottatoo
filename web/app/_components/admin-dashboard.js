@@ -288,6 +288,11 @@ export default function AdminDashboard() {
     });
   }
 
+  const managedNumbersKey = useMemo(
+    () => managedNumbersList.map((i) => i.number).join(","),
+    [managedNumbersList],
+  );
+
   useEffect(() => {
     if (!connectionInstance) return;
     const interval = setInterval(async () => {
@@ -305,6 +310,107 @@ export default function AdminDashboard() {
     }, 5000);
     return () => clearInterval(interval);
   }, [connectionInstance]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshManagedStatuses() {
+      const list = normalizeManagedNumbersList(settings.managedNumbers);
+      if (!list.length) return;
+      const updates = await Promise.all(
+        list.map(async (item) => {
+          const instanceName = instanceFromNumber(item.number);
+          try {
+            const state = await checkConnectionState(instanceName);
+            return {
+              number: item.number,
+              connectionStatus: state,
+              needsQr: state !== "open",
+            };
+          } catch {
+            return {
+              number: item.number,
+              connectionStatus: item.connectionStatus || "desconhecido",
+              needsQr: item.needsQr ?? true,
+            };
+          }
+        }),
+      );
+      if (cancelled) return;
+      setSettings((current) => ({
+        ...current,
+        managedNumbers: normalizeManagedNumbersList(current.managedNumbers).map((item) => {
+          const hit = updates.find((u) => u.number === item.number);
+          if (!hit) return item;
+          return {
+            ...item,
+            connectionStatus: hit.connectionStatus,
+            needsQr: hit.needsQr,
+          };
+        }),
+      }));
+    }
+    refreshManagedStatuses();
+    const interval = setInterval(refreshManagedStatuses, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [managedNumbersKey]);
+
+  async function handleReconnectNumber(number) {
+    const digits = digitsOnly(number);
+    const instanceName = instanceFromNumber(digits);
+    if (!instanceName) return;
+    setConnectNumber(digits);
+    setConnectionInstance(instanceName);
+    setConnecting(true);
+    setStatus("Reconectando...");
+    setConnectionStatus("reconectando...");
+    try {
+      const createRes = await fetch("/api/evolution/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instanceName }),
+      });
+      const createData = await parseJsonSafe(createRes);
+      if (!createRes.ok) {
+        const text = String(createData?.error || "").toLowerCase();
+        const alreadyExists = text.includes("already") || text.includes("exist");
+        if (!alreadyExists) {
+          setStatus(createData?.error || "Falha ao preparar reconexão.");
+          setConnecting(false);
+          return;
+        }
+      }
+      const connectRes = await fetch("/api/evolution/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instanceName }),
+      });
+      const connectData = await parseJsonSafe(connectRes);
+      if (!connectRes.ok) {
+        setStatus(connectData?.error || "Não foi possível reconectar.");
+        setConnecting(false);
+        return;
+      }
+      const qr = connectData?.qrcodeDataUrl || "";
+      const code = connectData?.pairingCode || "";
+      setQrCodeDataUrl(qr);
+      setPairingCode(code);
+      setConnectionStatus(qr || code ? "aguardando leitura do QR Code..." : "reconectando...");
+      setStatus(qr || code ? "Escaneie o QR para reconectar." : "Tentativa de reconexão enviada.");
+      setSettings((current) => ({
+        ...current,
+        managedNumbers: normalizeManagedNumbersList(current.managedNumbers).map((item) =>
+          item.number === digits
+            ? { ...item, needsQr: Boolean(qr || code), connectionStatus: "connecting" }
+            : item,
+        ),
+      }));
+    } finally {
+      setConnecting(false);
+    }
+  }
 
   async function saveAll() {
     const pixKey = String(settings.pixKey || "").trim();
@@ -437,15 +543,44 @@ export default function AdminDashboard() {
                           <p className="mt-1 text-xs text-zinc-500">
                             {formatManagedNumberLabel(item)}
                           </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span
+                              className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                item.connectionStatus === "open"
+                                  ? "bg-emerald-900/60 text-emerald-300"
+                                  : item.needsQr
+                                    ? "bg-amber-900/60 text-amber-300"
+                                    : "bg-zinc-800 text-zinc-400"
+                              }`}
+                            >
+                              {item.connectionStatus === "open"
+                                ? "conectado"
+                                : item.needsQr
+                                  ? "precisa QR"
+                                  : item.connectionStatus || "offline"}
+                            </span>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => removeManagedNumber(item.number)}
-                          className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:border-red-800 hover:text-red-400 sm:shrink-0"
-                          aria-label={`Remover ${item.number}`}
-                        >
-                          Remover
-                        </button>
+                        <div className="flex gap-2 sm:shrink-0">
+                          {(item.needsQr || item.connectionStatus !== "open") && (
+                            <button
+                              type="button"
+                              onClick={() => handleReconnectNumber(item.number)}
+                              disabled={connecting}
+                              className="rounded-md border border-emerald-800 px-3 py-2 text-xs text-emerald-300 hover:bg-emerald-950 disabled:opacity-50"
+                            >
+                              Reconectar
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeManagedNumber(item.number)}
+                            className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:border-red-800 hover:text-red-400"
+                            aria-label={`Remover ${item.number}`}
+                          >
+                            Remover
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}

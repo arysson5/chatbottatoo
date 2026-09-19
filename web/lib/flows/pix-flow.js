@@ -54,9 +54,9 @@ function isDuplicateTransaction(db, transactionId, currentNumber) {
 }
 
 export async function handlePixFlow(ctx) {
-  const { number, text, db, message, key, sendText, settings, evolutionBase, instance, apiKey } = ctx;
-  const payment = getPendingPayment(db, number);
-  const schedule = getPendingSchedule(db, number);
+  const { number, text, db, message, key, sendText, settings, evolutionBase, instance = "", apiKey } = ctx;
+  const payment = getPendingPayment(db, number, instance);
+  const schedule = getPendingSchedule(db, number, instance);
   if (!payment) return false;
 
   const amountRequired =
@@ -170,7 +170,7 @@ export async function handlePixFlow(ctx) {
         pixKeyVerified: false,
         verifiedByReceipt: false,
         pixTransactionId: proof.transactionId || pixTransactionId,
-      });
+      }, instance);
       return true;
     }
 
@@ -185,7 +185,7 @@ export async function handlePixFlow(ctx) {
       pixKeyVerified: true,
       verifiedByReceipt: true,
       pixTransactionId,
-    });
+    }, instance);
   } else if (trimmed) {
     const manual = parseManualAmount(trimmed);
     if (manual !== null && manual > 0) {
@@ -200,7 +200,7 @@ export async function handlePixFlow(ctx) {
         pixKeyVerified: recipientVerified,
         verifiedByReceipt,
         pixTransactionId,
-      });
+      }, instance);
     } else if (!mediaInfo) {
       await sendText(
         number,
@@ -322,14 +322,14 @@ export async function handlePixFlow(ctx) {
     );
   }
 
-  await removePendingPayment(number);
-  await removePendingSchedule(number);
-  resetConfusion(number);
+  await removePendingPayment(number, instance);
+  await removePendingSchedule(number, instance);
+  resetConfusion(number, instance);
   return true;
 }
 
-export function isInPixFlow(db, number) {
-  const payment = getPendingPayment(db, number);
-  const schedule = getPendingSchedule(db, number);
+export function isInPixFlow(db, number, instance = "") {
+  const payment = getPendingPayment(db, number, instance);
+  const schedule = getPendingSchedule(db, number, instance);
   return Boolean(payment || schedule?.step === "pix");
 }

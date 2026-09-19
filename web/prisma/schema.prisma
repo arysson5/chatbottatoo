@@ -33,10 +33,13 @@ model AppSettings {
 }
 
 model ManagedNumber {
-  id        Int    @id @default(autoincrement())
-  number    String
-  name      String @default("")
-  sortOrder Int    @default(0) @map("sort_order")
+  id                 Int       @id @default(autoincrement())
+  number             String
+  name               String    @default("")
+  sortOrder          Int       @default(0) @map("sort_order")
+  connectionStatus   String    @default("") @map("connection_status")
+  needsQr            Boolean   @default(false) @map("needs_qr")
+  lastDisconnectAt   DateTime? @map("last_disconnect_at")
 
   @@map("managed_numbers")
 }
@@ -99,38 +102,48 @@ model LeadOutcome {
 }
 
 model MutedLead {
-  number    String   @id
+  instance  String   @default("")
+  number    String
   reason    String   @default("handoff")
   mutedAt   DateTime @map("muted_at")
   expiresAt DateTime @map("expires_at")
 
+  @@id([instance, number])
+  @@index([number])
   @@map("muted_leads")
 }
 
 model PendingSchedule {
-  number    String   @id
+  instance  String   @default("")
+  number    String
   data      Json     @default("{}")
   updatedAt DateTime @default(now()) @map("updated_at")
 
+  @@id([instance, number])
+  @@index([number])
   @@map("pending_schedules")
 }
 
 model PendingPayment {
-  number    String   @id
+  instance  String   @default("")
+  number    String
   data      Json     @default("{}")
   updatedAt DateTime @default(now()) @map("updated_at")
 
+  @@id([instance, number])
+  @@index([number])
   @@map("pending_payments")
 }
 
 model PendingInteraction {
+  instance  String   @default("")
   number    String
   step      String
   data      Json     @default("{}")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
   expiresAt DateTime? @map("expires_at")
 
-  @@id([number, step])
+  @@id([instance, number, step])
   @@index([number])
   @@map("pending_interactions")
 }

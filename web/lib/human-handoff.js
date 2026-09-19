@@ -6,12 +6,13 @@ import { sendToSecretaries, getSecretaryNumbers } from "@/lib/secretary-notify";
 import { muteNumberInDraft } from "@/lib/handoff-mute";
 import { resolveOptionChoice } from "@/lib/conversation-intent";
 import { resolveOriginFromInstance } from "@/lib/managed-numbers";
+import { makeScopeKey } from "@/lib/scope-key";
 
 const CONFUSION_THRESHOLD = 3;
 const MS_OFFER_TTL = 30 * 60_000;
 
 /** @type {Map<string, { count: number, awaitingChoice: boolean, offeredAt?: number }>} */
-const confusionByNumber = new Map();
+const confusionByScope = new Map();
 
 export const HUMAN_OFFER_BLOCK = `Percebi que estou com dificuldade em te entender 😅
 Quer que um atendente humano assuma esta conversa?
@@ -21,20 +22,23 @@ Quer que um atendente humano assuma esta conversa?
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  */
-export function resetConfusion(number) {
-  confusionByNumber.delete(number);
+export function resetConfusion(number, instance = "") {
+  confusionByScope.delete(makeScopeKey(instance, number));
 }
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  * @returns {boolean}
  */
-export function isAwaitingHumanChoice(number) {
-  const state = confusionByNumber.get(number);
+export function isAwaitingHumanChoice(number, instance = "") {
+  const key = makeScopeKey(instance, number);
+  const state = confusionByScope.get(key);
   if (!state?.awaitingChoice) return false;
   if (state.offeredAt && Date.now() - state.offeredAt > MS_OFFER_TTL) {
-    confusionByNumber.delete(number);
+    confusionByScope.delete(key);
     return false;
   }
   return true;
@@ -43,10 +47,12 @@ export function isAwaitingHumanChoice(number) {
 /**
  * @param {string} number
  * @param {string} baseMessage
+ * @param {string} [instance]
  * @returns {string}
  */
-export function processConfusionReply(number, baseMessage) {
-  const state = confusionByNumber.get(number) || { count: 0, awaitingChoice: false };
+export function processConfusionReply(number, baseMessage, instance = "") {
+  const key = makeScopeKey(instance, number);
+  const state = confusionByScope.get(key) || { count: 0, awaitingChoice: false };
 
   if (state.awaitingChoice) {
     return baseMessage;
@@ -57,11 +63,11 @@ export function processConfusionReply(number, baseMessage) {
   if (state.count >= CONFUSION_THRESHOLD) {
     state.awaitingChoice = true;
     state.offeredAt = Date.now();
-    confusionByNumber.set(number, state);
+    confusionByScope.set(key, state);
     return `${baseMessage}\n\n${HUMAN_OFFER_BLOCK}`;
   }
 
-  confusionByNumber.set(number, state);
+  confusionByScope.set(key, state);
   return baseMessage;
 }
 
@@ -111,12 +117,13 @@ export function buildHumanHandoffSummary(params) {
   } = params;
 
   const origin = resolveOriginFromInstance(instance, settings?.managedNumbers);
+  const scopeKey = makeScopeKey(instance, number);
 
-  const flowContext = detectFlowContext(db, number, memory || {});
-  const schedule = getPendingSchedule(db, number);
-  const payment = getPendingPayment(db, number);
-  const postQuote = memory?.pendingPostQuoteChoiceByNumber?.get?.(number) || null;
-  const handoffAreas = memory?.pendingHandoffAreasByNumber?.get?.(number) || null;
+  const flowContext = detectFlowContext(db, number, memory || {}, instance);
+  const schedule = getPendingSchedule(db, number, instance);
+  const payment = getPendingPayment(db, number, instance);
+  const postQuote = memory?.pendingPostQuoteChoiceByNumber?.get?.(scopeKey) || null;
+  const handoffAreas = memory?.pendingHandoffAreasByNumber?.get?.(scopeKey) || null;
 
   const lines = [
     "🚨 ATENDIMENTO HUMANO SOLICITADO",
@@ -205,7 +212,8 @@ export async function executeHumanHandoff(params) {
     clearFlows,
   } = params;
 
-  const confusionCount = confusionByNumber.get(number)?.count || CONFUSION_THRESHOLD;
+  const confusionCount =
+    confusionByScope.get(makeScopeKey(instance, number))?.count || CONFUSION_THRESHOLD;
   const origin = resolveOriginFromInstance(instance, settings?.managedNumbers);
   const summary = buildHumanHandoffSummary({
     number,
@@ -219,14 +227,15 @@ export async function executeHumanHandoff(params) {
   });
 
   const secretaryNumbers = getSecretaryNumbers(settings);
+  const schedule = getPendingSchedule(db, number, instance);
 
   await updateDb((draft) => {
     draft.leads.unshift({
       number,
       projectType: "atendimento_humano",
       handoffNumber: secretaryNumbers[0] || "",
-      selectedAreas: getPendingSchedule(db, number)?.selectedAreas || [],
-      estimatedTotal: getPendingSchedule(db, number)?.estimatedTotal || 0,
+      selectedAreas: schedule?.selectedAreas || [],
+      estimatedTotal: schedule?.estimatedTotal || 0,
       hasPhotos: false,
       originNumber: origin.number,
       originNumberName: origin.name,
@@ -235,7 +244,7 @@ export async function executeHumanHandoff(params) {
       status: "pending_handoff",
     });
     draft.leads = draft.leads.slice(0, 200);
-    muteNumberInDraft(draft, number, "human_assistance_requested");
+    muteNumberInDraft(draft, number, "human_assistance_requested", instance);
     return draft;
   });
 
@@ -247,7 +256,7 @@ export async function executeHumanHandoff(params) {
     clearFlows();
   }
 
-  resetConfusion(number);
+  resetConfusion(number, instance);
 
   await sendText(
     number,

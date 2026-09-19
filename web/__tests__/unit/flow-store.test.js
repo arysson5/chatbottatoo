@@ -51,5 +51,18 @@ describe("flow-store", () => {
     it("retorna false quando não há fluxo", () => {
       expect(hasSchedulingFlow(db, "5511000000000")).toBe(false);
     });
+
+    it("isola por instância", () => {
+      const multi = {
+        pendingSchedules: [
+          { number: TEST_NUMBER, instance: "briza-a", step: "name" },
+          { number: TEST_NUMBER, instance: "briza-b", step: "slot_choice" },
+        ],
+        pendingPayments: [],
+      };
+      expect(getPendingSchedule(multi, TEST_NUMBER, "briza-a")?.step).toBe("name");
+      expect(getPendingSchedule(multi, TEST_NUMBER, "briza-b")?.step).toBe("slot_choice");
+      expect(hasSchedulingFlow(multi, TEST_NUMBER, "briza-c")).toBe(false);
+    });
   });
 });

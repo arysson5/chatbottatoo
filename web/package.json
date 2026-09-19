@@ -39,8 +39,8 @@
     "@tailwindcss/postcss": "^4",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
-    "jest": "^30.4.2",
-    "jest-environment-node": "^30.4.1",
+    "jest": "^30.5.2",
+    "jest-environment-node": "^30.5.2",
     "prisma": "^6.19.0",
     "tailwindcss": "^4",
     "tsx": "^4.20.6"

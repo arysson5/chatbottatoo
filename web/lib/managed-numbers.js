@@ -3,20 +3,41 @@ export function digitsOnly(value) {
 }
 
 /**
- * @param {string | { number?: string, name?: string }} item
- * @returns {{ number: string, name: string } | null}
+ * @param {string | { number?: string, name?: string, connectionStatus?: string, needsQr?: boolean, lastDisconnectAt?: string }} item
+ * @returns {{ number: string, name: string, connectionStatus: string, needsQr: boolean, lastDisconnectAt: string } | null}
  */
 export function normalizeManagedNumberEntry(item) {
   if (typeof item === "string") {
     const number = digitsOnly(item);
-    return number ? { number, name: "" } : null;
+    return number
+      ? { number, name: "", connectionStatus: "", needsQr: false, lastDisconnectAt: "" }
+      : null;
   }
   if (item && typeof item === "object") {
     const number = digitsOnly(item.number);
     if (!number) return null;
-    return { number, name: String(item.name || "").trim() };
+    return {
+      number,
+      name: String(item.name || "").trim(),
+      connectionStatus: String(item.connectionStatus || "").trim(),
+      needsQr: Boolean(item.needsQr),
+      lastDisconnectAt: String(item.lastDisconnectAt || "").trim(),
+    };
   }
   return null;
+}
+
+/**
+ * @param {string} instance
+ * @param {unknown} managedNumbers
+ * @returns {boolean}
+ */
+export function isManagedInstance(instance, managedNumbers) {
+  const digits = extractInstanceDigits(instance);
+  if (!digits) return false;
+  const list = normalizeManagedNumbersList(managedNumbers);
+  if (!list.length) return true;
+  return list.some((item) => item.number === digits);
 }
 
 /**

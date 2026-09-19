@@ -30,7 +30,12 @@ import {
   HUMAN_OFFER_BLOCK,
 } from "@/lib/human-handoff";
 import { detectFlowContext, getFlowReminderMessage } from "@/lib/flow-context";
-import { resolveOriginFromInstance } from "@/lib/managed-numbers";
+import {
+  resolveOriginFromInstance,
+  isManagedInstance,
+  extractInstanceDigits,
+} from "@/lib/managed-numbers";
+import { makeScopeKey, parseScopeKey } from "@/lib/scope-key";
 import { resolveInboundNumber } from "@/lib/evolution-jid";
 import {
   hydrateInteractionMaps,
@@ -42,6 +47,25 @@ import {
   clearMenuFlow,
   clearInteraction,
 } from "@/lib/flow-interaction-store";
+import {
+  filterInboundEntries,
+  markMessageSeen,
+  extractMessageId,
+  shouldSendWelcome,
+  markWelcomeSent,
+  tryAcquireChatLock,
+  releaseChatLock,
+  withOutboundRateLimit,
+  createOutboundCap,
+} from "@/lib/webhook-guard";
+import {
+  markMessageAsRead,
+  sendPresence,
+  rejectCall,
+  softReconnectInstance,
+  extractConnectionState,
+  evolutionFetchWithTimeout,
+} from "@/lib/evolution-bot-ops";
 
 const DEFAULT_WELCOME_MESSAGE = `Fala, meu amigo! Tudo certo? 🤝
 Aqui é o Matheus Brizza, especialista em Neo Tribal e Geométrico 🔥
@@ -101,64 +125,73 @@ function normalizeForCompare(text) {
 /**
  * @param {string} number
  * @param {string} text
+ * @param {string} [instance]
  */
-function rememberBotOutboundText(number, text) {
+function rememberBotOutboundText(number, text, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
   const normalized = normalizeForCompare(text);
   if (!normalized) return;
-  const current = Array.isArray(recentBotOutboundTextByNumber.get(number))
-    ? recentBotOutboundTextByNumber.get(number)
+  const current = Array.isArray(recentBotOutboundTextByNumber.get(scopeKey))
+    ? recentBotOutboundTextByNumber.get(scopeKey)
     : [];
   const now = Date.now();
   const next = [
     ...current.filter((item) => now - item.at < 5 * 60_000),
     { text: normalized, at: now },
   ].slice(-20);
-  recentBotOutboundTextByNumber.set(number, next);
+  recentBotOutboundTextByNumber.set(scopeKey, next);
 }
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  */
-function rememberBotOutboundMedia(number) {
-  recentBotOutboundMediaByNumber.set(number, Date.now());
+function rememberBotOutboundMedia(number, instance = "") {
+  recentBotOutboundMediaByNumber.set(makeScopeKey(instance, number), Date.now());
 }
 
 /**
  * @param {string} number
+ * @param {object} db
+ * @param {string} [instance]
  * @returns {boolean}
  */
-function hasActiveFlow(number, db) {
+function hasActiveFlow(number, db, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
   return (
-    isAwaitingHumanChoice(number) ||
-    hasPendingPoll(number) ||
-    pendingCatalogAreasByNumber.has(number) ||
-    pendingPostQuoteChoiceByNumber.has(number) ||
-    pendingHandoffAreasByNumber.has(number) ||
-    pendingHandoffPhotosByNumber.has(number) ||
-    hasSchedulingFlow(db, number)
+    isAwaitingHumanChoice(number, instance) ||
+    hasPendingPoll(number, instance) ||
+    pendingCatalogAreasByNumber.has(scopeKey) ||
+    pendingPostQuoteChoiceByNumber.has(scopeKey) ||
+    pendingHandoffAreasByNumber.has(scopeKey) ||
+    pendingHandoffPhotosByNumber.has(scopeKey) ||
+    hasSchedulingFlow(db, number, instance)
   );
 }
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  */
-async function clearFlowState(number) {
-  await clearMenuFlow(number, getInteractionMaps());
-  await clearSchedulingFlows(number);
+async function clearFlowState(number, instance = "") {
+  await clearMenuFlow(number, getInteractionMaps(), instance);
+  await clearSchedulingFlows(number, instance);
 }
 
 /**
  * @param {string} number
  * @param {string} text
  * @param {boolean} hasMedia
+ * @param {string} [instance]
  * @returns {boolean}
  */
-function isLikelyBotMessage(number, text, hasMedia) {
+function isLikelyBotMessage(number, text, hasMedia, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
   const normalized = normalizeForCompare(text);
   const now = Date.now();
   if (normalized) {
-    const candidates = Array.isArray(recentBotOutboundTextByNumber.get(number))
-      ? recentBotOutboundTextByNumber.get(number)
+    const candidates = Array.isArray(recentBotOutboundTextByNumber.get(scopeKey))
+      ? recentBotOutboundTextByNumber.get(scopeKey)
       : [];
     const match = candidates.some(
       (item) => item.text === normalized && now - item.at < 5 * 60_000,
@@ -166,7 +199,7 @@ function isLikelyBotMessage(number, text, hasMedia) {
     if (match) return true;
   }
   if (hasMedia) {
-    const recentMediaAt = recentBotOutboundMediaByNumber.get(number);
+    const recentMediaAt = recentBotOutboundMediaByNumber.get(scopeKey);
     if (typeof recentMediaAt === "number" && now - recentMediaAt < 2 * 60_000) {
       return true;
     }
@@ -183,9 +216,10 @@ function isLikelyBotMessage(number, text, hasMedia) {
  * @param {object} quoteContext
  */
 async function beginAgendarFlow(baseUrl, instance, apiKey, number, clientName, quoteContext, pricingTable) {
-  resetConfusion(number);
-  pendingPollByNumber.delete(number);
-  pendingPostQuoteChoiceByNumber.delete(number);
+  const scopeKey = makeScopeKey(instance, number);
+  resetConfusion(number, instance);
+  pendingPollByNumber.delete(scopeKey);
+  pendingPostQuoteChoiceByNumber.delete(scopeKey);
   await registerLeadOutcome({
     number,
     clientName,
@@ -194,9 +228,9 @@ async function beginAgendarFlow(baseUrl, instance, apiKey, number, clientName, q
     estimatedTotal: quoteContext.estimatedTotal || 0,
     quoteIssuedAt: quoteContext.quoteIssuedAt || null,
     quoteExpiresAt: quoteContext.quoteExpiresAt || null,
-    instance: quoteContext.instance || "",
+    instance: quoteContext.instance || instance || "",
   });
-  await startClientDataFlow(quoteContext, number, clientName, quoteContext.instance || "", pricingTable);
+  await startClientDataFlow(quoteContext, number, clientName, quoteContext.instance || instance || "", pricingTable);
   await askClientName(
     (n, text) => sendText(baseUrl, instance, apiKey, n, text),
     number,
@@ -211,7 +245,7 @@ function getFlowMemory() {
     pendingHandoffAreasByNumber,
     pendingHandoffPhotosByNumber,
     pendingPollByNumber,
-    hasPendingPoll,
+    hasPendingPoll: (n, inst) => hasPendingPoll(n, inst),
   };
 }
 
@@ -254,8 +288,9 @@ async function applyPostQuoteChoice(choice, params) {
   }
 
   if (choice === 2) {
-    pendingPollByNumber.delete(number);
-    pendingPostQuoteChoiceByNumber.delete(number);
+    const scopeKey = makeScopeKey(instance, number);
+    pendingPollByNumber.delete(scopeKey);
+    pendingPostQuoteChoiceByNumber.delete(scopeKey);
     await registerLeadOutcome({
       number,
       clientName,
@@ -388,20 +423,28 @@ function hasImageAttachment(message) {
  */
 async function sendText(baseUrl, instance, apiKey, number, text) {
   const target = `${normalizeBase(baseUrl)}/message/sendText/${encodeURIComponent(instance)}`;
-  const res = await fetch(target, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      apikey: apiKey,
-    },
-    body: JSON.stringify({ number, text }),
+  return withOutboundRateLimit(instance, async () => {
+    try {
+      const res = await evolutionFetchWithTimeout(target, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: apiKey,
+        },
+        body: JSON.stringify({ number, text }),
+        timeoutMs: 8000,
+      });
+      if (!res.ok) {
+        const errBody = await res.text();
+        console.error("[webhook] sendText falhou", res.status, errBody);
+      }
+      if (res.ok) rememberBotOutboundText(number, text, instance);
+      return res.ok;
+    } catch (error) {
+      console.error("[webhook] sendText erro", error?.message || error);
+      return false;
+    }
   });
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error("[webhook] sendText falhou", res.status, errBody);
-  }
-  if (res.ok) rememberBotOutboundText(number, text);
-  return res.ok;
 }
 
 /**
@@ -449,18 +492,33 @@ async function sendCatalog(baseUrl, instance, apiKey, number) {
   };
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const res = await fetch(target, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: apiKey,
-      },
-      body: JSON.stringify(payload),
-    });
+    let res;
+    try {
+      res = await withOutboundRateLimit(instance, async () =>
+        evolutionFetchWithTimeout(target, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: apiKey,
+          },
+          body: JSON.stringify(payload),
+          timeoutMs: 8000,
+        }),
+      );
+    } catch (error) {
+      console.warn("[webhook] sendMedia erro", {
+        attempt,
+        error: error?.message || error,
+      });
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      continue;
+    }
 
     if (res.ok) {
-      rememberBotOutboundMedia(number);
-      markCatalogSent(number);
+      rememberBotOutboundMedia(number, instance);
+      markCatalogSent(number, instance);
       console.log("[webhook] catalogo enviado", { number, attempt, bytes: media.length });
       return true;
     }
@@ -582,13 +640,14 @@ function toIso(timestampMs) {
 /**
  * @param {string} number
  * @param {string} reason
+ * @param {string} [instance]
  */
-async function muteBotForLead(number, reason) {
+async function muteBotForLead(number, reason, instance = "") {
   await updateDb((draft) => {
-    muteNumberInDraft(draft, number, reason);
+    muteNumberInDraft(draft, number, reason, instance);
     return draft;
   });
-  console.log("[webhook] lead_muted_for_bot", { number, reason, muteDays: 7 });
+  console.log("[webhook] lead_muted_for_bot", { number, reason, instance, muteDays: 7 });
 }
 
 /**
@@ -621,28 +680,35 @@ function hasNewTattooVote(pollUpdates) {
 
 /**
  * @param {string} number
+ * @param {string} [instance]
  * @returns {boolean}
  */
-function recentlySentCatalog(number) {
+function recentlySentCatalog(number, instance = "") {
   const now = Date.now();
-  const previous = recentCatalogByNumber.get(number);
+  const previous = recentCatalogByNumber.get(makeScopeKey(instance, number));
   return typeof previous === "number" && now - previous < 60_000;
-}
-
-function markCatalogSent(number) {
-  recentCatalogByNumber.set(number, Date.now());
 }
 
 /**
  * @param {string} number
+ * @param {string} [instance]
+ */
+function markCatalogSent(number, instance = "") {
+  recentCatalogByNumber.set(makeScopeKey(instance, number), Date.now());
+}
+
+/**
+ * @param {string} number
+ * @param {string} [instance]
  * @returns {boolean}
  */
-function hasPendingPoll(number) {
-  const timestamp = pendingPollByNumber.get(number);
+function hasPendingPoll(number, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  const timestamp = pendingPollByNumber.get(scopeKey);
   if (typeof timestamp !== "number") return false;
   // Expira pendência para evitar disparos tardios de eventos não relacionados.
   if (Date.now() - timestamp > MENU_TTL_MS) {
-    pendingPollByNumber.delete(number);
+    pendingPollByNumber.delete(scopeKey);
     return false;
   }
   return true;
@@ -807,20 +873,27 @@ function extractAnySelectedValue(message) {
 }
 
 /**
+ * Retorna o número se houver exatamente um poll pendente nesta instância.
+ * Ambíguo (0 ou >1) → string vazia (sem fallback cross-instance).
+ * @param {string} instance
  * @returns {string}
  */
-function getSinglePendingPollNumber() {
+function getSinglePendingPollNumber(instance = "") {
+  const prefix = `${String(instance || "").trim()}:`;
+  if (!prefix || prefix === ":") return "";
   const now = Date.now();
   const valid = [];
-  for (const [number, timestamp] of pendingPollByNumber.entries()) {
+  for (const [scopeKey, timestamp] of pendingPollByNumber.entries()) {
+    if (!String(scopeKey).startsWith(prefix)) continue;
     if (typeof timestamp !== "number") continue;
     if (now - timestamp > MENU_TTL_MS) {
-      pendingPollByNumber.delete(number);
+      pendingPollByNumber.delete(scopeKey);
       continue;
     }
-    valid.push(number);
+    valid.push(scopeKey);
   }
-  return valid.length === 1 ? valid[0] : "";
+  if (valid.length !== 1) return "";
+  return parseScopeKey(valid[0]).number;
 }
 
 export async function POST(request) {
@@ -833,7 +906,11 @@ export async function POST(request) {
 
   const event = String(body?.event || "");
   const normalized = event.toUpperCase().replace(/\./g, "_");
-  if (!["MESSAGES_UPSERT", "MESSAGES_UPDATE"].includes(normalized)) {
+  if (
+    !["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE", "CALL"].includes(
+      normalized,
+    )
+  ) {
     return new NextResponse("ok", { status: 200 });
   }
 
@@ -858,8 +935,17 @@ export async function POST(request) {
   }
 
   const db = await readDb();
+  const managedNumbers = db?.settings?.managedNumbers;
+  if (
+    Array.isArray(managedNumbers) &&
+    managedNumbers.length > 0 &&
+    !isManagedInstance(instance, managedNumbers)
+  ) {
+    console.log("[webhook] unmanaged_instance_ignored", { instance });
+    return new NextResponse("ok", { status: 200 });
+  }
+
   hydrateInteractionMaps(db, getInteractionMaps());
-  const handoffNumber = db?.settings?.handoffNumber?.trim() || "";
   const settings = db?.settings || {};
   const welcomeMessage =
     db?.settings?.welcomeMessage?.trim() || DEFAULT_WELCOME_MESSAGE;
@@ -869,6 +955,56 @@ export async function POST(request) {
     db?.settings?.catalogPrompt?.trim() || DEFAULT_CATALOG_PROMPT;
   const pricingTable = Array.isArray(db?.pricing) ? db.pricing : [];
   const mutedLeadNumbers = await resolveHandoffMutes(db, updateDb);
+
+  if (normalized === "CONNECTION_UPDATE") {
+    const state = extractConnectionState(body);
+    const digits = extractInstanceDigits(instance);
+    const isClose = /close|disconnect|refused|logout|timeout/.test(state);
+    const isOpen = /open|connected|online/.test(state);
+
+    await updateDb((draft) => {
+      if (!draft.settings) draft.settings = {};
+      const list = Array.isArray(draft.settings.managedNumbers)
+        ? draft.settings.managedNumbers
+        : [];
+      draft.settings.managedNumbers = list.map((item) => {
+        const entry =
+          typeof item === "string"
+            ? { number: digitsOnly(item), name: "" }
+            : item && typeof item === "object"
+              ? { ...item }
+              : null;
+        if (!entry) return item;
+        if (digitsOnly(entry.number) !== digits) return item;
+        entry.connectionStatus = state || entry.connectionStatus || "";
+        if (isClose) {
+          entry.needsQr = true;
+          entry.lastDisconnectAt = new Date().toISOString();
+        }
+        if (isOpen) {
+          entry.needsQr = false;
+        }
+        return entry;
+      });
+      return draft;
+    });
+
+    if (isClose) {
+      console.log("[webhook] connection_close_soft_reconnect", { instance, state });
+      await softReconnectInstance(evolutionBase, instance, apiKey);
+    }
+    if (isOpen) {
+      await sendPresence(evolutionBase, instance, apiKey, digits, "available");
+      console.log("[webhook] connection_open", { instance, state });
+    }
+    return new NextResponse("ok", { status: 200 });
+  }
+
+  if (normalized === "CALL") {
+    await rejectCall(evolutionBase, instance, apiKey, body?.data || body);
+    console.log("[webhook] call_rejected", { instance });
+    return new NextResponse("ok", { status: 200 });
+  }
 
   if (normalized === "MESSAGES_UPDATE") {
     const dataList = Array.isArray(body.data) ? body.data : [body.data];
@@ -884,29 +1020,60 @@ export async function POST(request) {
       const updateNumber = extractUpdateNumber(updateObj);
       const matchedNewTattoo = updateLooksLikeNewTattooVote(updateObj);
       const fallbackPendingNumber =
-        !mappedNumber && !updateNumber ? getSinglePendingPollNumber() : "";
+        !mappedNumber && !updateNumber ? getSinglePendingPollNumber(instance) : "";
       const number = mappedNumber || updateNumber || fallbackPendingNumber;
       if (!number) continue;
-      const matchedPendingPoll = hasPendingPoll(number) && updateLooksLikePollInteraction(updateObj);
+      const scopeKey = makeScopeKey(instance, number);
+      const matchedPendingPoll =
+        hasPendingPoll(number, instance) && updateLooksLikePollInteraction(updateObj);
       console.log("[webhook] messages_update", {
         number,
+        instance,
         pollId,
         matchedNewTattoo,
         matchedPendingPoll,
       });
       if (!matchedNewTattoo && !matchedPendingPoll) continue;
-      if (recentlySentCatalog(number)) continue;
+      if (recentlySentCatalog(number, instance)) continue;
 
       await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
-      pendingPollByNumber.delete(number);
+      pendingPollByNumber.delete(scopeKey);
       if (directMapKey) pendingPollByMessageId.delete(directMapKey);
     }
     return new NextResponse("ok", { status: 200 });
   }
 
   const entries = flattenWebhookMessageEntries(body.data);
-  for (const entry of entries) {
-    const key = entry.key && typeof entry.key === "object" ? /** @type {Record<string, unknown>} */ (entry.key) : null;
+  const { toProcess, ignored } = await filterInboundEntries(
+    instance,
+    entries,
+    async (entry) => {
+      const key =
+        entry.key && typeof entry.key === "object"
+          ? /** @type {Record<string, unknown>} */ (entry.key)
+          : null;
+      if (!key) return "";
+      return resolveInboundNumber(key, /** @type {Record<string, unknown>} */ (entry), {
+        baseUrl: evolutionBase,
+        instance,
+        apiKey,
+      });
+    },
+  );
+
+  if (ignored.length) {
+    console.log("[webhook] inbound_filtered", {
+      instance,
+      ignored: ignored.map((item) => item.reason),
+      count: ignored.length,
+    });
+  }
+
+  for (const entry of toProcess) {
+    const key =
+      entry.key && typeof entry.key === "object"
+        ? /** @type {Record<string, unknown>} */ (entry.key)
+        : null;
     if (!key) continue;
 
     const number = await resolveInboundNumber(
@@ -915,316 +1082,354 @@ export async function POST(request) {
       { baseUrl: evolutionBase, instance, apiKey },
     );
     if (!number) continue;
-    if (mutedLeadNumbers.has(number)) {
-      console.log("[webhook] muted_number_ignored", { number });
+
+    const scopeKey = makeScopeKey(instance, number);
+    if (mutedLeadNumbers.has(scopeKey)) {
+      console.log("[webhook] muted_number_ignored", { number, instance, scopeKey });
       continue;
     }
-    const clientName = extractClientName(
-      /** @type {Record<string, unknown>} */ (entry),
-      key,
-    );
 
-    const message = entry.message && typeof entry.message === "object" ? entry.message : null;
-    const interactiveSelectionRaw = extractInteractiveSelection(
-      message ? /** @type {Record<string, unknown>} */ (message) : null,
-    );
-    const interactiveSelectionFallback = extractAnySelectedValue(
-      message ? /** @type {Record<string, unknown>} */ (message) : null,
-    );
-    const interactiveSelection = (interactiveSelectionRaw || interactiveSelectionFallback).toLowerCase();
-    const text = extractMessageText(message).trim();
-    const normalizedText = text.toLowerCase();
-    const hasPhotoInMessage = hasImageAttachment(
-      message ? /** @type {Record<string, unknown>} */ (message) : null,
-    );
+    if (!tryAcquireChatLock(scopeKey)) {
+      console.log("[webhook] chat_lock_busy", { scopeKey });
+      continue;
+    }
 
-    if (key.fromMe === true) {
-      if (hasActiveFlow(number, db)) {
-        const likelyBot = isLikelyBotMessage(number, text, hasPhotoInMessage);
-        if (!likelyBot) {
-          await muteBotForLead(number, "human_takeover_mid_flow");
-          await clearFlowState(number);
-          console.log("[webhook] human_takeover_detected", { number });
+    try {
+      const messageId = extractMessageId(entry);
+      if (messageId) markMessageSeen(instance, messageId);
+      await markMessageAsRead(evolutionBase, instance, apiKey, key);
+      await sendPresence(evolutionBase, instance, apiKey, number, "composing");
+
+      const outboundCap = createOutboundCap();
+      const sendCapped = async (n, msg) => {
+        if (!outboundCap.canSend()) {
+          console.log("[webhook] outbound_cap_reached", { number: n, scopeKey });
+          return false;
         }
-      }
-      continue;
-    }
-    console.log("[webhook] upsert_inbound", {
-      number,
-      hasText: Boolean(text),
-      textPreview: text.slice(0, 60),
-      interactiveSelectionRaw,
-      interactiveSelectionFallback,
-      hasPendingSelector: hasPendingPoll(number),
-      hasPixMedia: hasPhotoInMessage,
-      inPixFlow: isInPixFlow(db, number),
-    });
+        const ok = await sendText(evolutionBase, instance, apiKey, n, msg);
+        if (ok) outboundCap.record();
+        return ok;
+      };
 
-    if (
-      hasAudioAttachment(message ? /** @type {Record<string, unknown>} */ (message) : null) &&
-      !isInPixFlow(db, number)
-    ) {
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        "No momento ainda não consigo ouvir áudios 🎙️\nPor favor, envie sua mensagem por texto.",
+      const clientName = extractClientName(
+        /** @type {Record<string, unknown>} */ (entry),
+        key,
       );
-      continue;
-    }
 
-    if (isAwaitingHumanChoice(number) && normalizedText) {
-      const humanChoice = await parseHumanHandoffChoice(normalizedText);
-      const send = (n, msg) => sendText(evolutionBase, instance, apiKey, n, msg);
+      const message =
+        entry.message && typeof entry.message === "object" ? entry.message : null;
+      const interactiveSelectionRaw = extractInteractiveSelection(
+        message ? /** @type {Record<string, unknown>} */ (message) : null,
+      );
+      const interactiveSelectionFallback = extractAnySelectedValue(
+        message ? /** @type {Record<string, unknown>} */ (message) : null,
+      );
+      const interactiveSelection = (
+        interactiveSelectionRaw || interactiveSelectionFallback
+      ).toLowerCase();
+      const text = extractMessageText(message).trim();
+      const normalizedText = text.toLowerCase();
+      const hasPhotoInMessage = hasImageAttachment(
+        message ? /** @type {Record<string, unknown>} */ (message) : null,
+      );
 
-      if (humanChoice === "yes") {
-        await executeHumanHandoff({
+      if (key.fromMe === true) {
+        if (hasActiveFlow(number, db, instance)) {
+          const likelyBot = isLikelyBotMessage(number, text, hasPhotoInMessage, instance);
+          if (!likelyBot) {
+            await muteBotForLead(number, "human_takeover_mid_flow", instance);
+            await clearFlowState(number, instance);
+            console.log("[webhook] human_takeover_detected", { number, instance });
+          }
+        }
+        continue;
+      }
+
+      console.log("[webhook] upsert_inbound", {
+        number,
+        instance,
+        scopeKey,
+        hasText: Boolean(text),
+        textPreview: text.slice(0, 60),
+        interactiveSelectionRaw,
+        interactiveSelectionFallback,
+        hasPendingSelector: hasPendingPoll(number, instance),
+        hasPixMedia: hasPhotoInMessage,
+        inPixFlow: isInPixFlow(db, number, instance),
+      });
+
+      if (
+        hasAudioAttachment(message ? /** @type {Record<string, unknown>} */ (message) : null) &&
+        !isInPixFlow(db, number, instance)
+      ) {
+        await sendCapped(
           number,
-          clientName,
+          "No momento ainda não consigo ouvir áudios 🎙️\nPor favor, envie sua mensagem por texto.",
+        );
+        continue;
+      }
+
+      if (isAwaitingHumanChoice(number, instance) && normalizedText) {
+        const humanChoice = await parseHumanHandoffChoice(normalizedText);
+
+        if (humanChoice === "yes") {
+          await executeHumanHandoff({
+            number,
+            clientName,
+            db,
+            settings,
+            memory: getFlowMemory(),
+            lastMessage: text,
+            instance,
+            sendText: sendCapped,
+            clearFlows: () => clearFlowState(number, instance),
+          });
+          continue;
+        }
+
+        if (humanChoice === "no") {
+          resetConfusion(number, instance);
+          const ctx = detectFlowContext(db, number, getFlowMemory(), instance);
+          await sendCapped(
+            number,
+            `Sem problemas! Vamos continuar. 👇\n\n${getFlowReminderMessage(ctx)}`,
+          );
+          continue;
+        }
+
+        await sendCapped(number, HUMAN_OFFER_BLOCK);
+        continue;
+      }
+
+      if (hasSchedulingFlow(db, number, instance) || isInPixFlow(db, number, instance)) {
+        const schedulingHandled = await trySchedulingFlows(
+          evolutionBase,
+          instance,
+          apiKey,
+          number,
           db,
           settings,
-          memory: getFlowMemory(),
-          lastMessage: text,
-          instance,
-          sendText: send,
-          clearFlows: () => clearFlowState(number),
+          text,
+          message,
+          key,
+          clientName,
+          pricingTable,
+        );
+        if (schedulingHandled) continue;
+      }
+
+      const latestOutcomeForNumber = (
+        Array.isArray(db?.leadOutcomes) ? db.leadOutcomes : []
+      ).find((item) => {
+        if (item?.number !== number) return false;
+        const rowInst = String(item?.instance || "").trim();
+        if (!rowInst || !instance) return true;
+        return rowInst === instance;
+      });
+      const hasExpiredNonScheduledOutcome =
+        (latestOutcomeForNumber?.outcome === "question_no_schedule" ||
+          latestOutcomeForNumber?.outcome === "left_for_later") &&
+        typeof latestOutcomeForNumber?.quoteExpiresAt === "string" &&
+        Date.now() >= new Date(latestOutcomeForNumber.quoteExpiresAt).getTime();
+
+      if (!hasActiveFlow(number, db, instance) && hasExpiredNonScheduledOutcome) {
+        const reactivateChoice = await resolveOptionChoice({
+          state: "pos_orcamento_expirado",
+          options: [{ id: 1, label: "Agendar" }],
+          userMessage: normalizedText,
+        });
+        if (reactivateChoice === 1) {
+          const selectedAreas = Array.isArray(latestOutcomeForNumber?.selectedAreas)
+            ? latestOutcomeForNumber.selectedAreas
+            : [];
+          const estimatedTotal =
+            typeof latestOutcomeForNumber?.estimatedTotal === "number"
+              ? latestOutcomeForNumber.estimatedTotal
+              : 0;
+          await beginAgendarFlow(
+            evolutionBase,
+            instance,
+            apiKey,
+            number,
+            clientName,
+            {
+              selectedAreas,
+              estimatedTotal,
+              quoteIssuedAt: latestOutcomeForNumber?.quoteIssuedAt || null,
+              quoteExpiresAt: latestOutcomeForNumber?.quoteExpiresAt || null,
+              instance,
+            },
+            pricingTable,
+          );
+          continue;
+        }
+      }
+
+      if (
+        !hasActiveFlow(number, db, instance) &&
+        hasExpiredNonScheduledOutcome &&
+        !latestOutcomeForNumber?.expiryNoticeSentAt
+      ) {
+        await sendCapped(
+          number,
+          "Seu orçamento expirou hoje 🗓️\nSe você ainda quiser esse projeto, responda AGENDAR para reservar sua data.",
+        );
+        await updateDb((draft) => {
+          const found = (draft.leadOutcomes || []).find(
+            (item) =>
+              item?.number === number &&
+              item?.createdAt === latestOutcomeForNumber?.createdAt &&
+              (!item?.instance || !instance || item.instance === instance),
+          );
+          if (found) {
+            found.expiryNoticeSentAt = new Date().toISOString();
+          }
+          return draft;
         });
         continue;
       }
 
-      if (humanChoice === "no") {
-        resetConfusion(number);
-        const ctx = detectFlowContext(db, number, getFlowMemory());
-        await sendText(
+      if (
+        pendingPostQuoteChoiceByNumber.has(scopeKey) &&
+        (normalizedText || interactiveSelection)
+      ) {
+        const quoteContext = pendingPostQuoteChoiceByNumber.get(scopeKey) || {};
+        const selectedAreas = Array.isArray(quoteContext.selectedAreas)
+          ? quoteContext.selectedAreas
+          : [];
+        const estimatedTotal =
+          typeof quoteContext.estimatedTotal === "number" ? quoteContext.estimatedTotal : 0;
+        const quoteIssuedAtMs =
+          typeof quoteContext.quoteIssuedAtMs === "number"
+            ? quoteContext.quoteIssuedAtMs
+            : Date.now();
+        const quoteExpiresAtMs =
+          typeof quoteContext.quoteExpiresAtMs === "number"
+            ? quoteContext.quoteExpiresAtMs
+            : quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
+
+        const postQuoteChoice = await resolveOptionChoice({
+          state: "pos_orcamento",
+          options: [
+            { id: 1, label: "Agendar" },
+            { id: 2, label: "Tirar dúvida" },
+          ],
+          userMessage: normalizedText || interactiveSelection,
+        });
+
+        const postQuoteParams = {
           evolutionBase,
           instance,
           apiKey,
           number,
-          `Sem problemas! Vamos continuar. 👇\n\n${getFlowReminderMessage(ctx)}`,
-        );
-        continue;
-      }
-
-      await sendText(evolutionBase, instance, apiKey, number, HUMAN_OFFER_BLOCK);
-      continue;
-    }
-
-    if (hasSchedulingFlow(db, number) || isInPixFlow(db, number)) {
-      const schedulingHandled = await trySchedulingFlows(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        db,
-        settings,
-        text,
-        message,
-        key,
-        clientName,
-        pricingTable,
-      );
-      if (schedulingHandled) continue;
-    }
-
-    const latestOutcomeForNumber = (Array.isArray(db?.leadOutcomes) ? db.leadOutcomes : []).find(
-      (item) => item?.number === number,
-    );
-    const hasExpiredNonScheduledOutcome =
-      (latestOutcomeForNumber?.outcome === "question_no_schedule" ||
-        latestOutcomeForNumber?.outcome === "left_for_later") &&
-      typeof latestOutcomeForNumber?.quoteExpiresAt === "string" &&
-      Date.now() >= new Date(latestOutcomeForNumber.quoteExpiresAt).getTime();
-
-    if (
-      !hasActiveFlow(number, db) &&
-      hasExpiredNonScheduledOutcome
-    ) {
-      const reactivateChoice = await resolveOptionChoice({
-        state: "pos_orcamento_expirado",
-        options: [{ id: 1, label: "Agendar" }],
-        userMessage: normalizedText,
-      });
-      if (reactivateChoice === 1) {
-        const selectedAreas = Array.isArray(latestOutcomeForNumber?.selectedAreas)
-          ? latestOutcomeForNumber.selectedAreas
-          : [];
-        const estimatedTotal =
-          typeof latestOutcomeForNumber?.estimatedTotal === "number"
-            ? latestOutcomeForNumber.estimatedTotal
-            : 0;
-        await beginAgendarFlow(evolutionBase, instance, apiKey, number, clientName, {
+          clientName,
           selectedAreas,
           estimatedTotal,
-          quoteIssuedAt: latestOutcomeForNumber?.quoteIssuedAt || null,
-          quoteExpiresAt: latestOutcomeForNumber?.quoteExpiresAt || null,
-          instance,
-        }, pricingTable);
-        continue;
-      }
-    }
+          quoteIssuedAtMs,
+          quoteExpiresAtMs,
+          pricingTable,
+        };
 
-    if (
-      !hasActiveFlow(number, db) &&
-      hasExpiredNonScheduledOutcome &&
-      !latestOutcomeForNumber?.expiryNoticeSentAt
-    ) {
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        "Seu orçamento expirou hoje 🗓️\nSe você ainda quiser esse projeto, responda AGENDAR para reservar sua data.",
-      );
-      await updateDb((draft) => {
-        const found = (draft.leadOutcomes || []).find(
-          (item) =>
-            item?.number === number &&
-            item?.createdAt === latestOutcomeForNumber?.createdAt,
-        );
-        if (found) {
-          found.expiryNoticeSentAt = new Date().toISOString();
+        if (
+          postQuoteChoice !== null &&
+          (await applyPostQuoteChoice(postQuoteChoice, postQuoteParams))
+        ) {
+          resetConfusion(number, instance);
+          continue;
         }
-        return draft;
-      });
-      continue;
-    }
 
-    if (pendingPostQuoteChoiceByNumber.has(number) && (normalizedText || interactiveSelection)) {
-      const quoteContext = pendingPostQuoteChoiceByNumber.get(number) || {};
-      const selectedAreas = Array.isArray(quoteContext.selectedAreas)
-        ? quoteContext.selectedAreas
-        : [];
-      const estimatedTotal =
-        typeof quoteContext.estimatedTotal === "number" ? quoteContext.estimatedTotal : 0;
-      const quoteIssuedAtMs =
-        typeof quoteContext.quoteIssuedAtMs === "number" ? quoteContext.quoteIssuedAtMs : Date.now();
-      const quoteExpiresAtMs =
-        typeof quoteContext.quoteExpiresAtMs === "number"
-          ? quoteContext.quoteExpiresAtMs
-          : quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
-
-      const postQuoteChoice = await resolveOptionChoice({
-        state: "pos_orcamento",
-        options: [
-          { id: 1, label: "Agendar" },
-          { id: 2, label: "Tirar dúvida" },
-        ],
-        userMessage: normalizedText || interactiveSelection,
-      });
-
-      const postQuoteParams = {
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        clientName,
-        selectedAreas,
-        estimatedTotal,
-        quoteIssuedAtMs,
-        quoteExpiresAtMs,
-        pricingTable,
-      };
-
-      if (postQuoteChoice !== null && (await applyPostQuoteChoice(postQuoteChoice, postQuoteParams))) {
-        resetConfusion(number);
-        continue;
-      }
-
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        processConfusionReply(number, getFlowReminderMessage({ step: "post_quote_choice" })),
-      );
-      continue;
-    }
-
-    if (pendingHandoffAreasByNumber.has(number) && normalizedText) {
-      const handoffContext = pendingHandoffAreasByNumber.get(number);
-      const projectType =
-        handoffContext?.projectType === "reformar" ? "reformar" : "complementar";
-      const selectedAreas = extractAreaNumbers(normalizedText);
-      if (selectedAreas.length === 0) {
-        await sendText(
-          evolutionBase,
-          instance,
-          apiKey,
+        await sendCapped(
           number,
           processConfusionReply(
             number,
-            "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 2, 6 e 9).",
+            getFlowReminderMessage({ step: "post_quote_choice" }),
+            instance,
           ),
         );
         continue;
       }
 
-      const pricingField = getPricingFieldByProjectType(projectType);
-      const areaRows = selectedAreas.map((area) => {
-        const match = pricingTable.find((row) => Number(row?.area) === area);
-        const rawPrice = String(match?.[pricingField] || "");
-        const numeric = parseCurrencyToNumber(rawPrice);
-        return { area, rawPrice, numeric };
-      });
-      const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
-      const breakdown = areaRows
-        .map((row) => {
-          const display = row.rawPrice ? row.rawPrice : "sob consulta";
-          return `• Área ${row.area}: ${display}`;
-        })
-        .join("\n");
+      if (pendingHandoffAreasByNumber.has(scopeKey) && normalizedText) {
+        const handoffContext = pendingHandoffAreasByNumber.get(scopeKey);
+        const projectType =
+          handoffContext?.projectType === "reformar" ? "reformar" : "complementar";
+        const selectedAreas = extractAreaNumbers(normalizedText);
+        if (selectedAreas.length === 0) {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 2, 6 e 9).",
+              instance,
+            ),
+          );
+          continue;
+        }
 
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        `Perfeito, ${clientName}! ✅\nSe quiser, você pode me enviar fotos da tattoo atual para ajudar na avaliação do especialista 📸\nSe preferir seguir sem foto, é só responder normalmente que eu continuo.`,
-      );
-      pendingHandoffAreasByNumber.delete(number);
-      const handoffPhotoData = {
-        projectType,
-        selectedAreas,
-        total,
-        breakdown,
-        capturedAt: Date.now(),
-      };
-      await persistHandoffPhotos(number, handoffPhotoData, getInteractionMaps());
-      await clearInteraction(number, "handoff_areas");
-      continue;
-    }
+        const pricingField = getPricingFieldByProjectType(projectType);
+        const areaRows = selectedAreas.map((area) => {
+          const match = pricingTable.find((row) => Number(row?.area) === area);
+          const rawPrice = String(match?.[pricingField] || "");
+          const numeric = parseCurrencyToNumber(rawPrice);
+          return { area, rawPrice, numeric };
+        });
+        const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
+        const breakdown = areaRows
+          .map((row) => {
+            const display = row.rawPrice ? row.rawPrice : "sob consulta";
+            return `• Área ${row.area}: ${display}`;
+          })
+          .join("\n");
 
-    if (pendingHandoffPhotosByNumber.has(number)) {
-      const photoContext = pendingHandoffPhotosByNumber.get(number) || {};
-      const projectType =
-        photoContext?.projectType === "reformar" ? "reformar" : "complementar";
-      const selectedAreas = Array.isArray(photoContext?.selectedAreas)
-        ? photoContext.selectedAreas
-        : [];
-      const total = typeof photoContext?.total === "number" ? photoContext.total : 0;
-      const breakdown = typeof photoContext?.breakdown === "string" ? photoContext.breakdown : "";
-      const informedNoPhoto = /^(sem foto|sem fotos|nao tenho foto|não tenho foto)$/.test(normalizedText);
-      const hasPhotos = hasPhotoInMessage && !informedNoPhoto;
-      const secretaryNumbers = getSecretaryNumbers(settings);
-      await markLeadForHandoff(
-        number,
-        projectType,
-        secretaryNumbers[0] || "",
-        selectedAreas,
-        total,
-        hasPhotos,
-        instance,
-      );
+        await sendCapped(
+          number,
+          `Perfeito, ${clientName}! ✅\nSe quiser, você pode me enviar fotos da tattoo atual para ajudar na avaliação do especialista 📸\nSe preferir seguir sem foto, é só responder normalmente que eu continuo.`,
+        );
+        pendingHandoffAreasByNumber.delete(scopeKey);
+        const handoffPhotoData = {
+          projectType,
+          selectedAreas,
+          total,
+          breakdown,
+          capturedAt: Date.now(),
+        };
+        await persistHandoffPhotos(number, handoffPhotoData, getInteractionMaps(), instance);
+        await clearInteraction(number, "handoff_areas", instance);
+        continue;
+      }
 
-      const origin = resolveOriginFromInstance(instance, settings.managedNumbers);
-      const originLine = origin.name
-        ? `Linha de atendimento: ${origin.name} (${origin.number})`
-        : origin.number
-          ? `Linha de atendimento: ${origin.number}`
-          : "Origem: Bot Briza Tattoo";
+      if (pendingHandoffPhotosByNumber.has(scopeKey)) {
+        const photoContext = pendingHandoffPhotosByNumber.get(scopeKey) || {};
+        const projectType =
+          photoContext?.projectType === "reformar" ? "reformar" : "complementar";
+        const selectedAreas = Array.isArray(photoContext?.selectedAreas)
+          ? photoContext.selectedAreas
+          : [];
+        const total = typeof photoContext?.total === "number" ? photoContext.total : 0;
+        const breakdown =
+          typeof photoContext?.breakdown === "string" ? photoContext.breakdown : "";
+        const informedNoPhoto =
+          /^(sem foto|sem fotos|nao tenho foto|não tenho foto)$/.test(normalizedText);
+        const hasPhotos = hasPhotoInMessage && !informedNoPhoto;
+        const secretaryNumbers = getSecretaryNumbers(settings);
+        await markLeadForHandoff(
+          number,
+          projectType,
+          secretaryNumbers[0] || "",
+          selectedAreas,
+          total,
+          hasPhotos,
+          instance,
+        );
 
-      const leadSummary = `🚨 Novo lead para assumir
+        const origin = resolveOriginFromInstance(instance, settings.managedNumbers);
+        const originLine = origin.name
+          ? `Linha de atendimento: ${origin.name} (${origin.number})`
+          : origin.number
+            ? `Linha de atendimento: ${origin.number}`
+            : "Origem: Bot Briza Tattoo";
+
+        const leadSummary = `🚨 Novo lead para assumir
 Tipo: ${getProjectTypeLabel(projectType)}
 Cliente: ${clientName}
 WhatsApp cliente: ${number}
@@ -1241,247 +1446,258 @@ Ação recomendada:
 2) Confirmar detalhes da arte
 3) Fechar proposta final e agendamento`;
 
-      if (secretaryNumbers.length) {
-        await sendToSecretaries(
-          (n, msg) => sendText(evolutionBase, instance, apiKey, n, msg),
-          settings,
-          leadSummary,
+        if (secretaryNumbers.length) {
+          await sendToSecretaries(sendCapped, settings, leadSummary);
+        }
+        await muteBotForLead(number, "handoff_started", instance);
+
+        await sendCapped(
+          number,
+          secretaryNumbers.length
+            ? `Perfeito, ${clientName}! ✅\nRecebi tudo e já encaminhei seu atendimento para o especialista responsável.\nEle vai assumir essa conversa com você em breve.`
+            : `Perfeito, ${clientName}! ✅\nRecebi tudo e já deixei seu lead pronto para o especialista assumir a conversa.`,
         );
+
+        pendingHandoffPhotosByNumber.delete(scopeKey);
+        pendingPollByNumber.delete(scopeKey);
+        pendingCatalogAreasByNumber.delete(scopeKey);
+        pendingPostQuoteChoiceByNumber.delete(scopeKey);
+        continue;
       }
-      await muteBotForLead(number, "handoff_started");
 
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        secretaryNumbers.length
-          ? `Perfeito, ${clientName}! ✅\nRecebi tudo e já encaminhei seu atendimento para o especialista responsável.\nEle vai assumir essa conversa com você em breve.`
-          : `Perfeito, ${clientName}! ✅\nRecebi tudo e já deixei seu lead pronto para o especialista assumir a conversa.`,
-      );
+      if (pendingCatalogAreasByNumber.has(scopeKey) && normalizedText) {
+        const selectedAreas = extractAreaNumbers(normalizedText);
+        if (selectedAreas.length === 0) {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 1, 4 e 7).",
+              instance,
+            ),
+          );
+          continue;
+        }
 
-      pendingHandoffPhotosByNumber.delete(number);
-      pendingPollByNumber.delete(number);
-      pendingCatalogAreasByNumber.delete(number);
-      pendingPostQuoteChoiceByNumber.delete(number);
-      continue;
-    }
+        const areaRows = selectedAreas.map((area) => {
+          const match = pricingTable.find((row) => Number(row?.area) === area);
+          const rawPrice = String(match?.tattooNova || "");
+          const numeric = parseCurrencyToNumber(rawPrice);
+          return { area, rawPrice, numeric };
+        });
+        const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
+        const validityDate = getValidityDateLabel(QUOTE_VALIDITY_DAYS);
+        const breakdown = areaRows
+          .map((row) => {
+            const display = row.rawPrice ? row.rawPrice : "sob consulta";
+            return `• Área ${row.area}: ${display}`;
+          })
+          .join("\n");
 
-    if (pendingCatalogAreasByNumber.has(number) && normalizedText) {
-      const selectedAreas = extractAreaNumbers(normalizedText);
-      if (selectedAreas.length === 0) {
-        await sendText(
-          evolutionBase,
-          instance,
-          apiKey,
+        await sendCapped(
+          number,
+          `Fechado, ${clientName}! 🔥\nCom base nas áreas que você marcou, montei seu orçamento personalizado:\n\n${breakdown}\n\n💰 Total estimado: ${formatBRL(total)}\n🗓️ Validade deste orçamento: até ${validityDate} (${QUOTE_VALIDITY_DAYS} dias)\n\nEsse é um valor base para o estilo Tattoo Nova. No atendimento final, a gente ajusta tamanho, detalhes e encaixe da arte pra fechar certinho no seu projeto.`,
+        );
+        await sendCapped(
+          number,
+          "Me diz como quer seguir:\n1 - Agendar 📅\n2 - Tirar dúvida 💬\n\n🚀 Para travar sua data, responda: AGENDAR",
+        );
+        pendingCatalogAreasByNumber.delete(scopeKey);
+        const quoteIssuedAtMs = Date.now();
+        const postQuoteData = {
+          createdAt: quoteIssuedAtMs,
+          quoteIssuedAtMs,
+          quoteExpiresAtMs: quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
+          selectedAreas,
+          estimatedTotal: total,
+        };
+        await persistPostQuote(number, postQuoteData, getInteractionMaps(), instance);
+        await clearInteraction(number, "catalog_areas", instance);
+        resetConfusion(number, instance);
+        continue;
+      }
+
+      if (hasPendingPoll(number, instance) && (normalizedText || interactiveSelection)) {
+        let menuChoice = null;
+        if (interactiveSelection === OPTION_NEW_TATTOO) menuChoice = 1;
+        else if (interactiveSelection === OPTION_REFORM) menuChoice = 2;
+        else if (interactiveSelection === OPTION_COMPLEMENT) menuChoice = 3;
+        else {
+          menuChoice = await resolveOptionChoice({
+            state: "menu_principal",
+            options: [
+              { id: 1, label: "Nova Tattoo" },
+              { id: 2, label: "Reformar" },
+              { id: 3, label: "Complementar" },
+            ],
+            userMessage: normalizedText || interactiveSelection,
+          });
+        }
+
+        if (
+          menuChoice === 1 ||
+          normalizedText.includes("nova tattoo") ||
+          normalizedText === "novo" ||
+          normalizedText === "nova"
+        ) {
+          resetConfusion(number, instance);
+          await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
+          pendingPollByNumber.delete(scopeKey);
+          await clearInteraction(number, "main_menu", instance);
+          await persistCatalogAreas(number, getInteractionMaps(), instance);
+          continue;
+        }
+        if (menuChoice === 2) {
+          await sendCatalog(evolutionBase, instance, apiKey, number);
+          await sendCapped(
+            number,
+            "Perfeito! Para reforma, me envie os números das áreas da imagem (ex: 2, 6 e 9) para eu encaminhar seu lead completo ao especialista. ♻️",
+          );
+          await persistHandoffAreas(
+            number,
+            { projectType: "reformar", createdAt: Date.now() },
+            getInteractionMaps(),
+            instance,
+          );
+          pendingPollByNumber.delete(scopeKey);
+          await clearInteraction(number, "main_menu", instance);
+          pendingHandoffPhotosByNumber.delete(scopeKey);
+          pendingPostQuoteChoiceByNumber.delete(scopeKey);
+          await clearInteraction(number, "post_quote", instance);
+          continue;
+        }
+        if (menuChoice === 3) {
+          await sendCatalog(evolutionBase, instance, apiKey, number);
+          await sendCapped(
+            number,
+            "Boa! Para complemento, me envie os números das áreas da imagem (ex: 3, 7 e 10) para eu encaminhar seu lead completo ao especialista. 🧩",
+          );
+          await persistHandoffAreas(
+            number,
+            { projectType: "complementar", createdAt: Date.now() },
+            getInteractionMaps(),
+            instance,
+          );
+          pendingPollByNumber.delete(scopeKey);
+          await clearInteraction(number, "main_menu", instance);
+          pendingHandoffPhotosByNumber.delete(scopeKey);
+          pendingPostQuoteChoiceByNumber.delete(scopeKey);
+          await clearInteraction(number, "post_quote", instance);
+          continue;
+        }
+
+        await sendCapped(
           number,
           processConfusionReply(
             number,
-            "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 1, 4 e 7).",
+            getFlowReminderMessage({ step: "main_menu" }),
+            instance,
           ),
         );
         continue;
       }
 
-      const areaRows = selectedAreas.map((area) => {
-        const match = pricingTable.find((row) => Number(row?.area) === area);
-        const rawPrice = String(match?.tattooNova || "");
-        const numeric = parseCurrencyToNumber(rawPrice);
-        return { area, rawPrice, numeric };
-      });
-      const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
-      const validityDate = getValidityDateLabel(QUOTE_VALIDITY_DAYS);
-      const breakdown = areaRows
-        .map((row) => {
-          const display = row.rawPrice ? row.rawPrice : "sob consulta";
-          return `• Área ${row.area}: ${display}`;
-        })
-        .join("\n");
-
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        `Fechado, ${clientName}! 🔥\nCom base nas áreas que você marcou, montei seu orçamento personalizado:\n\n${breakdown}\n\n💰 Total estimado: ${formatBRL(total)}\n🗓️ Validade deste orçamento: até ${validityDate} (${QUOTE_VALIDITY_DAYS} dias)\n\nEsse é um valor base para o estilo Tattoo Nova. No atendimento final, a gente ajusta tamanho, detalhes e encaixe da arte pra fechar certinho no seu projeto.`,
-      );
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        "Me diz como quer seguir:\n1 - Agendar 📅\n2 - Tirar dúvida 💬\n\n🚀 Para travar sua data, responda: AGENDAR",
-      );
-      pendingCatalogAreasByNumber.delete(number);
-      const quoteIssuedAtMs = Date.now();
-      const postQuoteData = {
-        createdAt: quoteIssuedAtMs,
-        quoteIssuedAtMs,
-        quoteExpiresAtMs: quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
-        selectedAreas,
-        estimatedTotal: total,
-      };
-      await persistPostQuote(number, postQuoteData, getInteractionMaps());
-      await clearInteraction(number, "catalog_areas");
-      resetConfusion(number);
-      continue;
-    }
-
-    if (hasPendingPoll(number) && (normalizedText || interactiveSelection)) {
-      let menuChoice = null;
-      if (interactiveSelection === OPTION_NEW_TATTOO) menuChoice = 1;
-      else if (interactiveSelection === OPTION_REFORM) menuChoice = 2;
-      else if (interactiveSelection === OPTION_COMPLEMENT) menuChoice = 3;
-      else {
-        menuChoice = await resolveOptionChoice({
-          state: "menu_principal",
-          options: [
-            { id: 1, label: "Nova Tattoo" },
-            { id: 2, label: "Reformar" },
-            { id: 3, label: "Complementar" },
-          ],
-          userMessage: normalizedText || interactiveSelection,
-        });
-      }
-
-      if (menuChoice === 1 || normalizedText.includes("nova tattoo") || normalizedText === "novo" || normalizedText === "nova") {
-        resetConfusion(number);
+      if (
+        interactiveSelection === OPTION_NEW_TATTOO ||
+        normalizedText.includes("nova tattoo") ||
+        normalizedText === "novo" ||
+        normalizedText === "nova"
+      ) {
         await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
-        pendingPollByNumber.delete(number);
-        await clearInteraction(number, "main_menu");
-        await persistCatalogAreas(number, getInteractionMaps());
+        pendingPollByNumber.delete(scopeKey);
+        await clearInteraction(number, "main_menu", instance);
+        await persistCatalogAreas(number, getInteractionMaps(), instance);
         continue;
       }
-      if (menuChoice === 2) {
-        await sendCatalog(evolutionBase, instance, apiKey, number);
-        await sendText(
-          evolutionBase,
+
+      if (!text && !hasPhotoInMessage) continue;
+
+      if (normalizedText.includes("nova tattoo") || normalizedText === "novo") {
+        await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
+        await persistCatalogAreas(number, getInteractionMaps(), instance);
+        continue;
+      }
+
+      if (hasActiveFlow(number, db, instance)) {
+        const flowResult = await handleUnknownInActiveFlow({
+          db,
+          number,
+          userMessage: normalizedText || interactiveSelection,
+          memory: getFlowMemory(),
           instance,
-          apiKey,
-          number,
-          "Perfeito! Para reforma, me envie os números das áreas da imagem (ex: 2, 6 e 9) para eu encaminhar seu lead completo ao especialista. ♻️",
-        );
-        await persistHandoffAreas(
-          number,
-          { projectType: "reformar", createdAt: Date.now() },
-          getInteractionMaps(),
-        );
-        pendingPollByNumber.delete(number);
-        await clearInteraction(number, "main_menu");
-        pendingHandoffPhotosByNumber.delete(number);
-        pendingPostQuoteChoiceByNumber.delete(number);
-        await clearInteraction(number, "post_quote");
-        continue;
-      }
-      if (menuChoice === 3) {
-        await sendCatalog(evolutionBase, instance, apiKey, number);
-        await sendText(
-          evolutionBase,
-          instance,
-          apiKey,
-          number,
-          "Boa! Para complemento, me envie os números das áreas da imagem (ex: 3, 7 e 10) para eu encaminhar seu lead completo ao especialista. 🧩",
-        );
-        await persistHandoffAreas(
-          number,
-          { projectType: "complementar", createdAt: Date.now() },
-          getInteractionMaps(),
-        );
-        pendingPollByNumber.delete(number);
-        await clearInteraction(number, "main_menu");
-        pendingHandoffPhotosByNumber.delete(number);
-        pendingPostQuoteChoiceByNumber.delete(number);
-        await clearInteraction(number, "post_quote");
-        continue;
-      }
-
-      await sendText(
-        evolutionBase,
-        instance,
-        apiKey,
-        number,
-        processConfusionReply(number, getFlowReminderMessage({ step: "main_menu" })),
-      );
-      continue;
-    }
-
-    if (
-      interactiveSelection === OPTION_NEW_TATTOO ||
-      normalizedText.includes("nova tattoo") ||
-      normalizedText === "novo" ||
-      normalizedText === "nova"
-    ) {
-      await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
-      pendingPollByNumber.delete(number);
-      await clearInteraction(number, "main_menu");
-      await persistCatalogAreas(number, getInteractionMaps());
-      continue;
-    }
-
-    if (!text && !hasPhotoInMessage) continue;
-
-    if (normalizedText.includes("nova tattoo") || normalizedText === "novo") {
-      await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
-      await persistCatalogAreas(number, getInteractionMaps());
-      continue;
-    }
-
-    if (hasActiveFlow(number, db)) {
-      const flowResult = await handleUnknownInActiveFlow({
-        db,
-        number,
-        userMessage: normalizedText || interactiveSelection,
-        memory: getFlowMemory(),
-      });
-
-      if (flowResult.optionId !== undefined && flowResult.flowContext?.step === "post_quote_choice") {
-        const quoteContext = pendingPostQuoteChoiceByNumber.get(number) || {};
-        const selectedAreas = Array.isArray(quoteContext.selectedAreas) ? quoteContext.selectedAreas : [];
-        const estimatedTotal =
-          typeof quoteContext.estimatedTotal === "number" ? quoteContext.estimatedTotal : 0;
-        const quoteIssuedAtMs =
-          typeof quoteContext.quoteIssuedAtMs === "number" ? quoteContext.quoteIssuedAtMs : Date.now();
-        const quoteExpiresAtMs =
-          typeof quoteContext.quoteExpiresAtMs === "number"
-            ? quoteContext.quoteExpiresAtMs
-            : quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
+        });
 
         if (
-          await applyPostQuoteChoice(flowResult.optionId, {
-            evolutionBase,
-            instance,
-            apiKey,
-            number,
-            clientName,
-            selectedAreas,
-            estimatedTotal,
-            quoteIssuedAtMs,
-            quoteExpiresAtMs,
-            pricingTable,
-          })
+          flowResult.optionId !== undefined &&
+          flowResult.flowContext?.step === "post_quote_choice"
         ) {
-          continue;
+          const quoteContext = pendingPostQuoteChoiceByNumber.get(scopeKey) || {};
+          const selectedAreas = Array.isArray(quoteContext.selectedAreas)
+            ? quoteContext.selectedAreas
+            : [];
+          const estimatedTotal =
+            typeof quoteContext.estimatedTotal === "number"
+              ? quoteContext.estimatedTotal
+              : 0;
+          const quoteIssuedAtMs =
+            typeof quoteContext.quoteIssuedAtMs === "number"
+              ? quoteContext.quoteIssuedAtMs
+              : Date.now();
+          const quoteExpiresAtMs =
+            typeof quoteContext.quoteExpiresAtMs === "number"
+              ? quoteContext.quoteExpiresAtMs
+              : quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
+
+          if (
+            await applyPostQuoteChoice(flowResult.optionId, {
+              evolutionBase,
+              instance,
+              apiKey,
+              number,
+              clientName,
+              selectedAreas,
+              estimatedTotal,
+              quoteIssuedAtMs,
+              quoteExpiresAtMs,
+              pricingTable,
+            })
+          ) {
+            continue;
+          }
         }
+
+        if (flowResult.reminder) {
+          await sendCapped(number, flowResult.reminder);
+        }
+        continue;
       }
 
-      if (flowResult.reminder) {
-        await sendText(evolutionBase, instance, apiKey, number, flowResult.reminder);
+      if (!shouldSendWelcome(scopeKey)) {
+        console.log("[webhook] welcome_debounced", { scopeKey });
+        continue;
       }
-      continue;
-    }
 
-    const sentWelcome = await sendText(evolutionBase, instance, apiKey, number, welcomeMessage);
-    if (!sentWelcome) continue;
+      const sentWelcome = await sendCapped(number, welcomeMessage);
+      if (!sentWelcome) continue;
+      markWelcomeSent(scopeKey);
 
-    await sendText(evolutionBase, instance, apiKey, number, projectPrompt);
-    const selectorResult = await sendProjectSelector(evolutionBase, instance, apiKey, number);
-    if (selectorResult.ok && selectorResult.messageId) {
-      pendingPollByMessageId.set(`${instance}:${selectorResult.messageId}`, number);
-    }
-    if (selectorResult.ok) {
-      await persistMainMenu(number, getInteractionMaps());
-    } else {
-      await sendText(evolutionBase, instance, apiKey, number, SELECTOR_TEXT_FALLBACK);
+      await sendCapped(number, projectPrompt);
+      const selectorResult = await sendProjectSelector(
+        evolutionBase,
+        instance,
+        apiKey,
+        number,
+      );
+      if (selectorResult.ok && selectorResult.messageId) {
+        pendingPollByMessageId.set(`${instance}:${selectorResult.messageId}`, number);
+      }
+      if (selectorResult.ok) {
+        await persistMainMenu(number, getInteractionMaps(), instance);
+      } else {
+        await sendCapped(number, SELECTOR_TEXT_FALLBACK);
+      }
+    } finally {
+      releaseChatLock(scopeKey);
     }
   }
 

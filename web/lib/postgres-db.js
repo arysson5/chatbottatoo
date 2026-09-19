@@ -24,9 +24,10 @@ function toDate(value) {
 function pendingRowToObject(row) {
   const data = row.data && typeof row.data === "object" ? row.data : {};
   return {
+    ...data,
+    instance: row.instance || data.instance || "",
     number: row.number,
     updatedAt: toIso(row.updatedAt),
-    ...data,
   };
 }
 
@@ -92,6 +93,9 @@ export async function assembleDbSnapshot() {
       managedNumbers: managedNumbers.map((row) => ({
         number: row.number,
         name: row.name || "",
+        connectionStatus: row.connectionStatus || "",
+        needsQr: Boolean(row.needsQr),
+        lastDisconnectAt: toIso(row.lastDisconnectAt) || "",
       })),
       secretaryNumbers: secretaryNumbers.map((row) => row.number),
       scheduling,
@@ -131,6 +135,7 @@ export async function assembleDbSnapshot() {
       createdAt: toIso(row.createdAt),
     })),
     mutedLeadNumbers: mutedLeads.map((row) => ({
+      instance: row.instance || "",
       number: row.number,
       reason: row.reason || "handoff",
       mutedAt: toIso(row.mutedAt),
@@ -139,6 +144,7 @@ export async function assembleDbSnapshot() {
     pendingSchedules: pendingSchedules.map(pendingRowToObject),
     pendingPayments: pendingPayments.map(pendingRowToObject),
     pendingInteractions: pendingInteractions.map((row) => ({
+      instance: row.instance || "",
       number: row.number,
       step: row.step,
       data: row.data && typeof row.data === "object" ? row.data : {},
@@ -235,6 +241,9 @@ export async function persistDbSnapshot(snapshot) {
             number: String(item?.number || "").replace(/\D/g, ""),
             name: String(item?.name || "").trim(),
             sortOrder: index,
+            connectionStatus: String(item?.connectionStatus || "").trim(),
+            needsQr: Boolean(item?.needsQr),
+            lastDisconnectAt: toDate(item?.lastDisconnectAt),
           })).filter((item) => item.number),
         });
       }
@@ -317,6 +326,7 @@ export async function persistDbSnapshot(snapshot) {
             if (typeof row === "string") {
               const now = new Date();
               return {
+                instance: "",
                 number: row,
                 reason: "legacy_mute",
                 mutedAt: now,
@@ -324,6 +334,7 @@ export async function persistDbSnapshot(snapshot) {
               };
             }
             return {
+              instance: String(row.instance || ""),
               number: String(row.number || ""),
               reason: String(row.reason || "handoff"),
               mutedAt: toDate(row.mutedAt) || new Date(),
@@ -338,9 +349,11 @@ export async function persistDbSnapshot(snapshot) {
       for (const item of schedulesSlice) {
         const number = String(item?.number || "").replace(/\D/g, "");
         if (!number) continue;
-        const { number: _n, updatedAt, ...rest } = item;
+        const instance = String(item?.instance || "").trim();
+        const { number: _n, instance: _i, updatedAt, ...rest } = item;
         await tx.pendingSchedule.create({
           data: {
+            instance,
             number,
             data: rest,
             updatedAt: toDate(updatedAt) || new Date(),
@@ -353,9 +366,11 @@ export async function persistDbSnapshot(snapshot) {
       for (const item of paymentsSlice) {
         const number = String(item?.number || "").replace(/\D/g, "");
         if (!number) continue;
-        const { number: _n, updatedAt, ...rest } = item;
+        const instance = String(item?.instance || "").trim();
+        const { number: _n, instance: _i, updatedAt, ...rest } = item;
         await tx.pendingPayment.create({
           data: {
+            instance,
             number,
             data: rest,
             updatedAt: toDate(updatedAt) || new Date(),
@@ -371,6 +386,7 @@ export async function persistDbSnapshot(snapshot) {
         if (!number || !step) continue;
         await tx.pendingInteraction.create({
           data: {
+            instance: String(item?.instance || "").trim(),
             number,
             step,
             data: item.data && typeof item.data === "object" ? item.data : {},

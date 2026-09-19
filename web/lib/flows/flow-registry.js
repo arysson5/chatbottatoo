@@ -4,16 +4,16 @@ import { handleSchedulingFlow } from "@/lib/flows/scheduling-flow";
 import { handleClientDataFlow } from "@/lib/flows/client-data-flow";
 import { handleFaqFlow } from "@/lib/flows/faq-flow";
 
-export function hasExtendedActiveFlow(db, number, hasLegacyActiveFlow) {
-  return hasLegacyActiveFlow() || hasSchedulingFlow(db, number);
+export function hasExtendedActiveFlow(db, number, hasLegacyActiveFlow, instance = "") {
+  return hasLegacyActiveFlow() || hasSchedulingFlow(db, number, instance);
 }
 
 export async function processSchedulingFlows(ctx) {
-  const { db, number, message } = ctx;
+  const { db, number, instance = "" } = ctx;
 
   if (await handleFaqFlow(ctx)) return true;
 
-  if (isInPixFlow(db, number)) {
+  if (isInPixFlow(db, number, instance)) {
     const handled = await handlePixFlow(ctx);
     if (handled) return true;
   }

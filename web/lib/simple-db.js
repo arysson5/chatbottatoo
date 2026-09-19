@@ -51,11 +51,22 @@ export async function readDb() {
   return readDbFromJson();
 }
 
+/** Espelha o snapshot no JSON do host (bind mount) — backup se o volume Postgres for recriado. */
+async function mirrorToJsonBackup(safeDb) {
+  try {
+    await writeDbToJson(safeDb);
+  } catch (error) {
+    console.error("[db] espelho JSON (backup) falhou:", error?.message || error);
+  }
+}
+
 export async function writeDb(nextDb) {
   const safeDb = withDefaults(nextDb);
   if (shouldUsePostgres()) {
     try {
-      return await persistDbSnapshot(safeDb);
+      const saved = await persistDbSnapshot(safeDb);
+      await mirrorToJsonBackup(saved);
+      return saved;
     } catch (error) {
       console.error("[db] postgres write fallback para JSON", error?.message || error);
     }
@@ -66,7 +77,9 @@ export async function writeDb(nextDb) {
 export async function updateDb(updater) {
   if (shouldUsePostgres()) {
     try {
-      return await updateDbPostgres(updater);
+      const saved = await updateDbPostgres(updater);
+      await mirrorToJsonBackup(saved);
+      return saved;
     } catch (error) {
       console.error("[db] postgres update fallback para JSON", error?.message || error);
     }

@@ -4,8 +4,10 @@ import {
   isInteractionExpired,
   INTERACTION_STEPS,
 } from "@/lib/flow-interaction-store";
+import { makeScopeKey } from "@/lib/scope-key";
 
 const TEST_NUMBER = "5511999887766";
+const scope = (number, instance = "") => makeScopeKey(instance, number);
 
 describe("flow-interaction-store", () => {
   describe("isInteractionExpired", () => {
@@ -96,9 +98,9 @@ describe("flow-interaction-store", () => {
 
       hydrateInteractionMaps(db, maps);
 
-      expect(maps.pendingPollByNumber.has(TEST_NUMBER)).toBe(true);
-      expect(maps.pendingCatalogAreasByNumber.has("5511888777666")).toBe(true);
-      expect(maps.pendingPostQuoteChoiceByNumber.get("5511777666555")).toEqual(
+      expect(maps.pendingPollByNumber.has(scope(TEST_NUMBER))).toBe(true);
+      expect(maps.pendingCatalogAreasByNumber.has(scope("5511888777666"))).toBe(true);
+      expect(maps.pendingPostQuoteChoiceByNumber.get(scope("5511777666555"))).toEqual(
         expect.objectContaining({ total: 3000 }),
       );
     });

@@ -22,6 +22,7 @@ export function buildWebhookPayload(text, options = {}) {
     instance = "briza-5511988501368",
     messageId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     message = { conversation: text },
+    messageTimestamp = Math.floor(Date.now() / 1000),
   } = options;
 
   return {
@@ -36,6 +37,7 @@ export function buildWebhookPayload(text, options = {}) {
         id: messageId,
       },
       pushName: "Cliente Teste E2E",
+      messageTimestamp,
       message,
     },
   };

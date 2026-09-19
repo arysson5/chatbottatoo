@@ -1,4 +1,5 @@
 import { getPendingSchedule, getPendingPayment } from "@/lib/flows/flow-store";
+import { makeScopeKey } from "@/lib/scope-key";
 
 /**
  * @param {object} memory
@@ -7,11 +8,13 @@ import { getPendingSchedule, getPendingPayment } from "@/lib/flows/flow-store";
  * @param {Map<string, unknown>} memory.pendingHandoffAreasByNumber
  * @param {Map<string, unknown>} memory.pendingHandoffPhotosByNumber
  * @param {Map<string, unknown>} memory.pendingPollByNumber
- * @param {(number: string) => boolean} memory.hasPendingPoll
+ * @param {(number: string, instance?: string) => boolean} memory.hasPendingPoll
+ * @param {string} [instance]
  */
-export function detectFlowContext(db, number, memory) {
-  const schedule = getPendingSchedule(db, number);
-  const payment = getPendingPayment(db, number);
+export function detectFlowContext(db, number, memory, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  const schedule = getPendingSchedule(db, number, instance);
+  const payment = getPendingPayment(db, number, instance);
 
   if (payment || schedule?.step === "pix") {
     return {
@@ -61,7 +64,7 @@ export function detectFlowContext(db, number, memory) {
     };
   }
 
-  if (memory.pendingPostQuoteChoiceByNumber?.has(number)) {
+  if (memory.pendingPostQuoteChoiceByNumber?.has(scopeKey)) {
     return {
       state: "pos_orcamento",
       step: "post_quote_choice",
@@ -73,7 +76,7 @@ export function detectFlowContext(db, number, memory) {
     };
   }
 
-  if (memory.pendingHandoffPhotosByNumber?.has(number)) {
+  if (memory.pendingHandoffPhotosByNumber?.has(scopeKey)) {
     return {
       state: "handoff_fotos",
       step: "handoff_photos",
@@ -82,7 +85,7 @@ export function detectFlowContext(db, number, memory) {
     };
   }
 
-  if (memory.pendingHandoffAreasByNumber?.has(number)) {
+  if (memory.pendingHandoffAreasByNumber?.has(scopeKey)) {
     return {
       state: "handoff_areas",
       step: "handoff_areas",
@@ -91,7 +94,7 @@ export function detectFlowContext(db, number, memory) {
     };
   }
 
-  if (memory.pendingCatalogAreasByNumber?.has(number)) {
+  if (memory.pendingCatalogAreasByNumber?.has(scopeKey)) {
     return {
       state: "selecao_areas_catalogo",
       step: "catalog_areas",
@@ -100,7 +103,7 @@ export function detectFlowContext(db, number, memory) {
     };
   }
 
-  if (memory.hasPendingPoll?.(number)) {
+  if (memory.hasPendingPoll?.(number, instance)) {
     return {
       state: "menu_principal",
       step: "main_menu",
@@ -131,7 +134,7 @@ export function getFlowReminderMessage(flowContext) {
     case "main_menu":
       return "Escolha uma opção 👇\n1 - Nova Tattoo 🆕\n2 - Reformar ♻️\n3 - Complementar 🧩";
     case "catalog_areas":
-      return "Me envie os números das áreas da imagem (ex: 1, 4 e 7) ✍️";
+      return "Me envie os números das áreas da imagem (ex: 1, 4 e 7) 📍";
     case "handoff_areas":
       return "Me envie os números das áreas (ex: 2, 6 e 9) para eu encaminhar ao especialista.";
     case "handoff_photos":

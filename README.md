@@ -60,13 +60,7 @@ cp web/data/app-db.example.json web/data/app-db.json
 docker compose up -d
 ```
 
-5. (Opcional) Importar dados do JSON para PostgreSQL:
-
-```bash
-docker compose exec web npm run db:seed
-```
-
-6. Acesse:
+5. Acesse:
 
 | Serviço | URL |
 |---------|-----|
@@ -115,9 +109,37 @@ npm run dev
 | `APP_PUBLIC_URL` | URL pública do painel |
 | `DATABASE_URL` | PostgreSQL `briza_app` (automático no Docker; omitir = fallback JSON) |
 
+## Atualizar produção sem perder dados
+
+A config do painel (preços, números, leads, senha) fica no **PostgreSQL** (`briza_app`). O arquivo `web/data/app-db.json` é um **espelho/backup** no disco do host (não vai no Git).
+
+```bash
+# Update seguro
+git pull
+docker compose up -d
+```
+
+**Nunca** em produção:
+
+```bash
+docker compose down -v   # apaga volumes = zera painel e sessões WhatsApp
+```
+
+Backup manual do banco:
+
+```bash
+docker compose exec postgres pg_dump -U evolution briza_app > backup-briza_app.sql
+```
+
+Se o painel zerou após um update e o JSON ainda tem a config antiga:
+
+```bash
+docker compose exec web npm run db:seed
+```
+
 ## Banco de dados (PostgreSQL)
 
-O painel usa o banco **`briza_app`** no mesmo PostgreSQL da Evolution (container `postgres`). O JSON `web/data/app-db.json` permanece como **fallback** se `DATABASE_URL` não estiver definida ou se o Postgres falhar.
+O painel usa o banco **`briza_app`** no mesmo PostgreSQL da Evolution (container `postgres`). No boot, se o Postgres estiver vazio e `web/data/app-db.json` tiver configuração, o `db:seed` importa automaticamente. Cada save no painel também espelha o JSON como backup no host.
 
 | Comando | Descrição |
 |---------|-----------|
