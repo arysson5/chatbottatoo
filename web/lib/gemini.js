@@ -1,18 +1,22 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parseSlotRequestLocal } from "@/lib/slot-filters";
 import { parseProofAmount } from "@/lib/pix-proof-parser";
 
 export const PIX_RECEIPT_MIN_CONFIDENCE = 0.35;
 
-const MODEL_TEXT = "gemini-2.0-flash";
-const MODEL_VISION = "gemini-2.0-flash";
-const MODEL_VISION_FALLBACK = "gemini-1.5-flash";
 const TIMEZONE = "America/Sao_Paulo";
+const DEFAULT_MODEL = "auto";
 
-function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) return null;
-  return new GoogleGenerativeAI(apiKey);
+/**
+ * @returns {{ baseUrl: string, model: string, apiKey: string } | null}
+ */
+function getAiConfig() {
+  const baseUrl = process.env.AI_BASE_URL?.trim().replace(/\/$/, "");
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    model: process.env.AI_MODEL?.trim() || DEFAULT_MODEL,
+    apiKey: process.env.AI_API_KEY?.trim() || "",
+  };
 }
 
 function todayLabel() {
@@ -23,18 +27,136 @@ function todayLabel() {
   }).format(new Date());
 }
 
+function isQuotaError(error) {
+  const status = error?.status ?? error?.statusCode;
+  const message = String(error?.message || "");
+  return status === 429 || message.includes("429") || message.includes("quota") || message.includes("Quota exceeded");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Extrai texto da resposta OpenAI-compatible.
+ * @param {unknown} data
+ * @returns {string}
+ */
+function extractMessageContent(data) {
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part?.text === "string" ? part.text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
+/**
+ * Parse JSON tolerante a fences markdown.
+ * @param {string} text
+ * @returns {unknown}
+ */
+function parseJsonContent(text) {
+  const raw = String(text || "").trim();
+  if (!raw) throw new Error("empty_response");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) return JSON.parse(fenced[1].trim());
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
+    throw new Error("invalid_json");
+  }
+}
+
+/**
+ * @param {{
+ *   messages: Array<object>,
+ *   json?: boolean,
+ *   model?: string,
+ * }} options
+ * @returns {Promise<{ text: string, modelUsed: string }>}
+ */
+async function chatCompletion({ messages, json = false, model } = {}) {
+  const config = getAiConfig();
+  if (!config) {
+    const err = new Error("ai_not_configured");
+    err.status = 0;
+    throw err;
+  }
+
+  const modelName = model || config.model;
+  const headers = {
+    "Content-Type": "application/json",
+  };
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  const body = {
+    model: modelName,
+    messages,
+  };
+  if (json) {
+    body.response_format = { type: "json_object" };
+  }
+
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  const rawText = await response.text();
+  let data = null;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const err = new Error(
+      data?.error?.message || data?.message || `HTTP ${response.status}: ${rawText.slice(0, 200)}`,
+    );
+    err.status = response.status;
+    err.statusCode = response.status;
+    throw err;
+  }
+
+  const text = extractMessageContent(data);
+  if (!text) {
+    throw new Error("empty_completion");
+  }
+
+  return {
+    text,
+    modelUsed: data?.model || modelName,
+  };
+}
+
+/**
+ * @param {string} prompt
+ * @param {{ json?: boolean }} [opts]
+ */
+async function completeText(prompt, opts = {}) {
+  return chatCompletion({
+    messages: [{ role: "user", content: prompt }],
+    json: Boolean(opts.json),
+  });
+}
+
 export async function parseUserIntent(context, userMessage) {
   return parseFlowIntent(context, userMessage);
 }
 
 export async function parseFlowIntent(flowContext, userMessage) {
-  const client = getClient();
-  if (!client) return null;
-
-  const model = client.getGenerativeModel({
-    model: MODEL_TEXT,
-    generationConfig: { responseMimeType: "application/json" },
-  });
+  if (!getAiConfig()) return null;
 
   const state = String(flowContext?.state || "unknown");
   const step = flowContext?.step || "";
@@ -63,15 +185,15 @@ Responda APENAS JSON:
 {"action":"select_option"|"provide_data"|"unknown","optionId":<número ou null>,"confidence":<0 a 1>}`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
+    const result = await completeText(prompt, { json: true });
+    const parsed = parseJsonContent(result.text);
     return {
       action: String(parsed?.action || "unknown"),
       optionId: typeof parsed?.optionId === "number" ? parsed.optionId : null,
       confidence: typeof parsed?.confidence === "number" ? parsed.confidence : 0,
     };
   } catch (error) {
-    console.error("[gemini] parseFlowIntent falhou", error);
+    console.error("[omniroute] parseFlowIntent falhou", error);
     return null;
   }
 }
@@ -80,15 +202,9 @@ export async function parseSlotRequest(userMessage, scheduling) {
   const local = parseSlotRequestLocal(userMessage);
   if (local) return local;
 
-  const client = getClient();
-  if (!client) return null;
+  if (!getAiConfig()) return null;
 
   const daysAhead = Number(scheduling?.daysAhead) || 14;
-  const model = client.getGenerativeModel({
-    model: MODEL_TEXT,
-    generationConfig: { responseMimeType: "application/json" },
-  });
-
   const prompt = `Hoje: ${todayLabel()}
 Timezone: ${TIMEZONE}
 Máximo de dias à frente: ${daysAhead}
@@ -97,8 +213,8 @@ Mensagem: "${userMessage}"
 JSON: {"intent":"pick_option"|"refine_dates"|"show_more"|"unknown","optionId":null,"dateStart":null,"dateEnd":null,"weekdays":[],"confidence":0.9}`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
+    const result = await completeText(prompt, { json: true });
+    const parsed = parseJsonContent(result.text);
     return {
       intent: String(parsed?.intent || "unknown"),
       optionId: typeof parsed?.optionId === "number" ? parsed.optionId : null,
@@ -108,7 +224,7 @@ JSON: {"intent":"pick_option"|"refine_dates"|"show_more"|"unknown","optionId":nu
       confidence: typeof parsed?.confidence === "number" ? parsed.confidence : 0,
     };
   } catch (error) {
-    console.error("[gemini] parseSlotRequest falhou", error);
+    console.error("[omniroute] parseSlotRequest falhou", error);
     return null;
   }
 }
@@ -129,28 +245,22 @@ export async function parsePhoneResponse(userMessage, whatsappNumber) {
     return { useSameNumber: false, phone: digits, confidence: 0.9 };
   }
 
-  const client = getClient();
-  if (!client) return null;
-
-  const model = client.getGenerativeModel({
-    model: MODEL_TEXT,
-    generationConfig: { responseMimeType: "application/json" },
-  });
+  if (!getAiConfig()) return null;
 
   const prompt = `WhatsApp: ${whatsappNumber}
 Mensagem: "${userMessage}"
 JSON: {"useSameNumber":true|false,"phone":"<digitos ou null>","confidence":0.9}`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
+    const result = await completeText(prompt, { json: true });
+    const parsed = parseJsonContent(result.text);
     return {
       useSameNumber: Boolean(parsed?.useSameNumber),
       phone: parsed?.phone ? String(parsed.phone).replace(/\D/g, "") : null,
       confidence: typeof parsed?.confidence === "number" ? parsed.confidence : 0,
     };
   } catch (error) {
-    console.error("[gemini] parsePhoneResponse falhou", error);
+    console.error("[omniroute] parsePhoneResponse falhou", error);
     return null;
   }
 }
@@ -163,31 +273,39 @@ function parseProofAmountLocal(value) {
   return parseProofAmount(value);
 }
 
-function isQuotaError(error) {
-  const status = error?.status ?? error?.statusCode;
-  const message = String(error?.message || "");
-  return status === 429 || message.includes("429") || message.includes("quota") || message.includes("Quota exceeded");
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function generatePixProofWithModel(client, modelName, prompt, base64, mimeType) {
-  const model = client.getGenerativeModel({
+/**
+ * @param {string} prompt
+ * @param {string} base64
+ * @param {string} mimeType
+ * @param {string} modelName
+ */
+async function generatePixProofWithModel(prompt, base64, mimeType, modelName) {
+  const mime = mimeType || "image/jpeg";
+  const result = await chatCompletion({
     model: modelName,
-    generationConfig: { responseMimeType: "application/json" },
+    json: true,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          {
+            type: "image_url",
+            image_url: { url: `data:${mime};base64,${base64}` },
+          },
+        ],
+      },
+    ],
   });
-  const result = await model.generateContent([
-    prompt,
-    { inlineData: { data: base64, mimeType: mimeType || "image/jpeg" } },
-  ]);
-  return JSON.parse(result.response.text().trim());
+  return {
+    parsed: parseJsonContent(result.text),
+    modelUsed: result.modelUsed,
+  };
 }
 
 export async function extractPixProofFromImage(base64, mimeType, expectedContext = {}) {
-  const client = getClient();
-  if (!client || !base64) return { error: "no_client" };
+  const config = getAiConfig();
+  if (!config || !base64) return { error: "no_client" };
 
   const expectedName = expectedContext.pixHolderName || "";
 
@@ -218,12 +336,16 @@ Responda APENAS JSON:
   "confidence": 0.9
 }`;
 
-  const modelsToTry = [MODEL_VISION, MODEL_VISION_FALLBACK];
+  const maxAttempts = 2;
 
-  for (let i = 0; i < modelsToTry.length; i += 1) {
-    const modelName = modelsToTry[i];
+  for (let i = 0; i < maxAttempts; i += 1) {
     try {
-      const parsed = await generatePixProofWithModel(client, modelName, prompt, base64, mimeType);
+      const { parsed, modelUsed } = await generatePixProofWithModel(
+        prompt,
+        base64,
+        mimeType,
+        config.model,
+      );
       const receiptConfidence =
         typeof parsed?.receiptConfidence === "number" ? parsed.receiptConfidence : 0;
       const nameMatchConfidence =
@@ -242,20 +364,23 @@ Responda APENAS JSON:
         amount: parseProofAmountLocal(parsed?.amount),
         transactionId: String(parsed?.transactionId || "").trim().toUpperCase(),
         confidence: overallConfidence,
-        modelUsed: modelName,
+        modelUsed,
       };
     } catch (error) {
-      console.error(`[gemini] extractPixProofFromImage falhou (${modelName})`, error);
+      console.error(`[omniroute] extractPixProofFromImage falhou (tentativa ${i + 1})`, error);
 
       if (isQuotaError(error)) {
-        if (i < modelsToTry.length - 1) {
+        if (i < maxAttempts - 1) {
           await sleep(2000);
           continue;
         }
         return { error: "quota" };
       }
 
-      if (i < modelsToTry.length - 1) continue;
+      if (i < maxAttempts - 1) {
+        await sleep(1000);
+        continue;
+      }
       return { error: "api" };
     }
   }
@@ -270,23 +395,21 @@ export async function extractPixAmountFromImage(base64, mimeType) {
 }
 
 export async function answerTattooFaq(question, quoteContext) {
-  const client = getClient();
-  if (!client) return null;
+  if (!getAiConfig()) return null;
 
-  const model = client.getGenerativeModel({ model: MODEL_TEXT });
   const prompt = `Assistente tattoo Neo Tribal. Resposta curta em português (máx 4 frases).
 Orçamento: ${quoteContext.estimatedTotal || "N/A"} | Áreas: ${(quoteContext.selectedAreas || []).join(", ")}
 Pergunta: ${question}`;
 
   try {
-    const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+    const result = await completeText(prompt, { json: false });
+    return result.text.trim();
   } catch (error) {
-    console.error("[gemini] answerTattooFaq falhou", error);
+    console.error("[omniroute] answerTattooFaq falhou", error);
     return null;
   }
 }
 
 export function isGeminiConfigured() {
-  return Boolean(process.env.GEMINI_API_KEY?.trim());
+  return Boolean(process.env.AI_BASE_URL?.trim() || process.env.GEMINI_API_KEY?.trim());
 }

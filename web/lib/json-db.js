@@ -8,7 +8,7 @@ const DB_FILE = process.env.TEST_DB_FILE
   : path.join(DATA_DIR, "app-db.json");
 
 async function ensureDbFile() {
-  await mkdir(DATA_DIR, { recursive: true });
+  await mkdir(path.dirname(DB_FILE), { recursive: true });
   try {
     await readFile(DB_FILE, "utf-8");
   } catch {

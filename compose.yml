@@ -64,6 +64,27 @@ services:
       retries: 12
       start_period: 40s
 
+  omniroute:
+    container_name: briza_omniroute
+    image: diegosouzapw/omniroute:latest
+    restart: unless-stopped
+    ports:
+      - "20128:20128"
+    environment:
+      OMNIROUTE_MEMORY_MB: "1024"
+    volumes:
+      - omniroute_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:20128/v1/models',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
   web:
     container_name: briza_web
     image: node:22-bookworm-slim
@@ -74,6 +95,8 @@ services:
         condition: service_healthy
       evolution-api:
         condition: service_healthy
+      omniroute:
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
@@ -83,6 +106,9 @@ services:
       WEBHOOK_PUBLIC_URL: http://web:3000
       EVOLUTION_GLOBAL_API_KEY: ${AUTHENTICATION_API_KEY}
       DATABASE_URL: postgresql://evolution:${POSTGRES_PASSWORD:-evolution}@postgres:5432/briza_app
+      AI_BASE_URL: http://omniroute:20128/v1
+      AI_MODEL: auto
+      AI_API_KEY: ${AI_API_KEY:-}
     # db:seed só importa se Postgres estiver vazio e app-db.json tiver config (nunca apaga dados existentes)
     command: sh -c "npm install --silent 2>/dev/null && npm run db:provision && npm run db:migrate && npm run db:seed && npm run dev -- --hostname 0.0.0.0"
     healthcheck:
@@ -139,3 +165,4 @@ volumes:
   evolution_instances:
   evolution_postgres:
   evolution_redis:
+  omniroute_data:

@@ -7,6 +7,8 @@ const testDbFile = path.join(__dirname, "__tests__", "data", "app-db.test.json")
 const sharedEnv = {
   DATABASE_URL: "",
   TEST_DB_FILE: testDbFile,
+  AI_BASE_URL: "",
+  AI_API_KEY: "",
   GEMINI_API_KEY: "",
   EVOLUTION_GLOBAL_API_KEY: "test-api-key-e2e",
   EVOLUTION_BASE_URL: "http://127.0.0.1:9999",

@@ -163,7 +163,7 @@ ${(pwResult.stdout + pwResult.stderr).trim().split("\n").slice(-50).join("\n")}
 
 - [${jestOk ? "x" : " "}] Testes unitários passando
 - [${pwOk ? "x" : " "}] Testes E2E passando
-- [ ] \`GEMINI_API_KEY\` configurada em produção
+- [ ] \`AI_BASE_URL\` apontando para OmniRoute em produção
 - [ ] \`EVOLUTION_GLOBAL_API_KEY\` e \`EVOLUTION_BASE_URL\` configurados
 - [ ] \`DATABASE_URL\` apontando para Postgres
 - [ ] \`WEBHOOK_PUBLIC_URL\` acessível pela Evolution API

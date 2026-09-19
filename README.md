@@ -1,12 +1,12 @@
 # Chatbot Tattoo — Briza
 
-Chatbot de WhatsApp para estúdio de tattoo com orçamento, agendamento, PIX e painel administrativo. Integra **Evolution API** (WhatsApp), **Next.js** (painel e webhook), **Google Gemini** (linguagem natural e leitura de comprovantes) e **Google Calendar**.
+Chatbot de WhatsApp para estúdio de tattoo com orçamento, agendamento, PIX e painel administrativo. Integra **Evolution API** (WhatsApp), **Next.js** (painel e webhook), **OmniRoute** (linguagem natural e leitura de comprovantes via free tiers) e **Google Calendar**.
 
 ## Funcionalidades
 
 - Atendimento automático via WhatsApp (menu, orçamento por áreas, FAQ)
 - Agendamento com horários livres e Google Calendar
-- Confirmação de sinal PIX (OCR + Gemini + validação de recebedor)
+- Confirmação de sinal PIX (OCR + OmniRoute + validação de recebedor)
 - Painel de gestão (`/gestao`) — configuração, números de atendimento, leads
 - Repasse para secretaria humana e dashboard estratégico de leads
 - Múltiplos números de atendimento (instâncias Evolution)
@@ -15,7 +15,7 @@ Chatbot de WhatsApp para estúdio de tattoo com orçamento, agendamento, PIX e p
 
 ```
 .
-├── compose.yml          # Evolution API + Postgres + Redis + Next.js
+├── compose.yml          # Evolution API + Postgres + Redis + OmniRoute + Next.js
 ├── .env.example         # Variáveis da Evolution API (copiar para .env)
 └── web/                 # Aplicação Next.js
     ├── .env.example     # Variáveis do painel/webhook
@@ -28,7 +28,7 @@ Chatbot de WhatsApp para estúdio de tattoo com orçamento, agendamento, PIX e p
 
 - [Docker](https://www.docker.com/) e Docker Compose
 - Node.js 20+ (desenvolvimento local sem Docker)
-- Conta Google Cloud (Gemini + Calendar OAuth, opcional)
+- Conta Google Cloud (Calendar OAuth, opcional)
 
 ## Instalação rápida (Docker)
 
@@ -66,6 +66,7 @@ docker compose up -d
 |---------|-----|
 | Painel Next.js | http://localhost:3000 |
 | Evolution API | http://localhost:8080/manager |
+| OmniRoute (IA) | http://localhost:20128 |
 | Login gestão | http://localhost:3000/login |
 
 Na primeira execução, crie a senha do painel em `/login`.
@@ -74,7 +75,7 @@ Na primeira execução, crie a senha do painel em `/login`.
 
 ```bash
 # Terminal 1 — infraestrutura
-docker compose up -d postgres redis evolution-api
+docker compose up -d postgres redis evolution-api omniroute
 
 # Terminal 2 — Next.js
 cd web
@@ -86,7 +87,6 @@ cp data/app-db.example.json data/app-db.json
 npm run db:provision && npm run db:migrate
 npm run dev
 ```
-
 ## Variáveis de ambiente
 
 ### Raiz (`.env`) — Evolution API
@@ -104,7 +104,9 @@ npm run dev
 | `EVOLUTION_BASE_URL` | URL da Evolution (`http://localhost:8080`) |
 | `EVOLUTION_GLOBAL_API_KEY` | Mesma chave `AUTHENTICATION_API_KEY` |
 | `WEBHOOK_PUBLIC_URL` | URL que a Evolution usa para chamar o webhook |
-| `GEMINI_API_KEY` | Google Gemini (opcional, melhora NLP e comprovantes) |
+| `AI_BASE_URL` | OmniRoute OpenAI-compatible (`http://localhost:20128/v1`) |
+| `AI_MODEL` | Modelo OmniRoute (padrão: `auto`) |
+| `AI_API_KEY` | Bearer opcional do dashboard OmniRoute |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth Calendar (opcional) |
 | `APP_PUBLIC_URL` | URL pública do painel |
 | `DATABASE_URL` | PostgreSQL `briza_app` (automático no Docker; omitir = fallback JSON) |

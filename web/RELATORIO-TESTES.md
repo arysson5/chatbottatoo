@@ -116,7 +116,7 @@ npm run test:report       # Regenera este relatório
 |----------|-----|
 | `TEST_DB_FILE` | Banco JSON isolado (automático no Playwright) |
 | `DATABASE_URL=""` | Força fallback JSON nos testes |
-| `GEMINI_API_KEY=""` | Desabilita chamadas Gemini nos unitários |
+| `AI_BASE_URL=""` | Desabilita chamadas de IA (OmniRoute) nos unitários |
 
 ---
 
@@ -126,7 +126,7 @@ npm run test:report       # Regenera este relatório
 - [x] 22 testes E2E passando
 - [x] Bug de escolha numérica corrigido (`conversation-intent.js`)
 - [x] Banco de teste isolado (`TEST_DB_FILE`)
-- [ ] `GEMINI_API_KEY` configurada em produção
+- [ ] `AI_BASE_URL` apontando para OmniRoute em produção
 - [ ] `EVOLUTION_GLOBAL_API_KEY` e `EVOLUTION_BASE_URL` configurados
 - [ ] `DATABASE_URL` apontando para Postgres em produção
 - [ ] `WEBHOOK_PUBLIC_URL` acessível pela Evolution API
