@@ -9,7 +9,9 @@ function createMemory(overrides = {}) {
   return {
     pendingPostQuoteChoiceByNumber: new Map(),
     pendingCatalogAreasByNumber: new Map(),
+    pendingCatalogAreaConfirmByNumber: new Map(),
     pendingHandoffAreasByNumber: new Map(),
+    pendingHandoffAreaConfirmByNumber: new Map(),
     pendingHandoffPhotosByNumber: new Map(),
     pendingPollByNumber: new Map(),
     hasPendingPoll: (n, inst = "") =>
@@ -103,6 +105,23 @@ describe("flow-context", () => {
       expect(ctx.state).toBe("selecao_areas_catalogo");
     });
 
+    it("detecta confirmação de áreas do catálogo", () => {
+      const memory = createMemory();
+      memory.pendingCatalogAreaConfirmByNumber.set(TEST_SCOPE, {
+        suggestedAreas: [1, 3, 4],
+      });
+
+      const ctx = detectFlowContext(
+        { pendingSchedules: [], pendingPayments: [] },
+        TEST_NUMBER,
+        memory,
+        TEST_INSTANCE,
+      );
+
+      expect(ctx.state).toBe("selecao_areas_confirmacao");
+      expect(ctx.step).toBe("catalog_areas_confirm");
+    });
+
     it("isola fluxos por instância", () => {
       const db = {
         pendingSchedules: [
@@ -132,6 +151,8 @@ describe("flow-context", () => {
       expect(getFlowReminderMessage({ step: "post_quote_choice" })).toMatch(/Agendar/i);
       expect(getFlowReminderMessage({ step: "main_menu" })).toMatch(/Nova Tattoo/i);
       expect(getFlowReminderMessage({ step: "catalog_areas" })).toMatch(/números das áreas/i);
+      expect(getFlowReminderMessage({ step: "catalog_areas_confirm" })).toMatch(/sim/i);
+      expect(getFlowReminderMessage({ step: "handoff_areas_confirm" })).toMatch(/vírgula/i);
       expect(getFlowReminderMessage({ step: "slot_choice" })).toMatch(/horário/i);
       expect(getFlowReminderMessage({ step: "pix" })).toMatch(/comprovante PIX/i);
       expect(getFlowReminderMessage({ step: "name" })).toMatch(/nome completo/i);

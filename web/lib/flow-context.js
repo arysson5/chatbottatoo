@@ -85,11 +85,29 @@ export function detectFlowContext(db, number, memory, instance = "") {
     };
   }
 
+  if (memory.pendingHandoffAreaConfirmByNumber?.has(scopeKey)) {
+    return {
+      state: "handoff_areas_confirm",
+      step: "handoff_areas_confirm",
+      description: "Cliente confirmando se as áreas desmembradas (ex.: 134 → 1,3,4) estão corretas no handoff.",
+      options: [],
+    };
+  }
+
   if (memory.pendingHandoffAreasByNumber?.has(scopeKey)) {
     return {
       state: "handoff_areas",
       step: "handoff_areas",
       description: "Cliente informando números das áreas do catálogo para reforma/complemento.",
+      options: [],
+    };
+  }
+
+  if (memory.pendingCatalogAreaConfirmByNumber?.has(scopeKey)) {
+    return {
+      state: "selecao_areas_confirmacao",
+      step: "catalog_areas_confirm",
+      description: "Cliente confirmando se as áreas desmembradas (ex.: 134 → 1,3,4) estão corretas.",
       options: [],
     };
   }
@@ -135,8 +153,12 @@ export function getFlowReminderMessage(flowContext) {
       return "Escolha uma opção 👇\n1 - Nova Tattoo 🆕\n2 - Reformar ♻️\n3 - Complementar 🧩";
     case "catalog_areas":
       return "Me envie os números das áreas da imagem (ex: 1, 4 e 7) 📍";
+    case "catalog_areas_confirm":
+      return "Confirme as áreas: diga *sim* ou envie de novo os números separados por vírgula (ex: 1,3,4).";
     case "handoff_areas":
       return "Me envie os números das áreas (ex: 2, 6 e 9) para eu encaminhar ao especialista.";
+    case "handoff_areas_confirm":
+      return "Confirme as áreas: diga *sim* ou envie de novo os números separados por vírgula (ex: 1,3,4).";
     case "handoff_photos":
       return "Envie fotos da tattoo atual ou diga *sem foto* se não tiver.";
     case "name":

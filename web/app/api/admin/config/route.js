@@ -128,6 +128,29 @@ export async function POST(request) {
       };
     }
 
+    if (Array.isArray(settings?.faqEntries)) {
+      draft.settings.faqEntries = settings.faqEntries
+        .map((item, index) => {
+          const keywordsRaw = Array.isArray(item?.keywords)
+            ? item.keywords
+            : String(item?.keywords || "")
+                .split(",")
+                .map((k) => k.trim())
+                .filter(Boolean);
+          return {
+            id:
+              asString(item?.id).trim() ||
+              `faq_${index + 1}_${Date.now()}`,
+            question: asString(item?.question).trim(),
+            keywords: keywordsRaw.map((k) => asString(k).trim()).filter(Boolean),
+            answer: asString(item?.answer).trim(),
+            aiContext: asString(item?.aiContext).trim(),
+            enabled: item?.enabled !== false,
+          };
+        })
+        .filter((e) => e.question || e.answer || e.keywords.length);
+    }
+
     draft.pricing = safePricing;
     return draft;
   });

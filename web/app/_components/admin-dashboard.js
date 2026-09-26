@@ -41,6 +41,7 @@ const EMPTY_SETTINGS = {
     calendarId: "primary",
     connectedAt: "",
   },
+  faqEntries: [],
 };
 
 const DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -86,6 +87,9 @@ export default function AdminDashboard() {
           ...EMPTY_SETTINGS.googleCalendar,
           ...(configData.settings?.googleCalendar || {}),
         },
+        faqEntries: Array.isArray(configData.settings?.faqEntries)
+          ? configData.settings.faqEntries
+          : [],
       });
       setCalendarConnected(Boolean(configData.calendarConnected));
       setPricing(Array.isArray(configData.pricing) ? configData.pricing : []);
@@ -458,6 +462,39 @@ export default function AdminDashboard() {
         scheduling: { ...(current.scheduling || {}), workingHours: hours.sort((a, b) => a.day - b.day) },
       };
     });
+  }
+
+  function updateFaqEntry(index, field, value) {
+    setSettings((current) => {
+      const list = [...(current.faqEntries || [])];
+      if (!list[index]) return current;
+      list[index] = { ...list[index], [field]: value };
+      return { ...current, faqEntries: list };
+    });
+  }
+
+  function addFaqEntry() {
+    setSettings((current) => ({
+      ...current,
+      faqEntries: [
+        ...(current.faqEntries || []),
+        {
+          id: `faq_custom_${Date.now()}`,
+          question: "",
+          keywords: [],
+          answer: "",
+          aiContext: "",
+          enabled: true,
+        },
+      ],
+    }));
+  }
+
+  function removeFaqEntry(index) {
+    setSettings((current) => ({
+      ...current,
+      faqEntries: (current.faqEntries || []).filter((_, i) => i !== index),
+    }));
   }
 
   async function handleLogout() {
@@ -845,6 +882,105 @@ export default function AdminDashboard() {
                 ),
               )}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-medium">Dúvidas frequentes (IA)</h2>
+              <p className="text-sm text-zinc-400">
+                Respostas e contexto que a IA usa no WhatsApp. Sem resposta cadastrada, o bot oferece
+                atendente humano.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={addFaqEntry}
+              className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm hover:bg-zinc-800"
+            >
+              + Adicionar dúvida
+            </button>
+          </div>
+          <div className="space-y-4">
+            {(settings.faqEntries || []).map((entry, index) => (
+              <div
+                key={entry.id || index}
+                className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 space-y-2"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 text-sm text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={entry.enabled !== false}
+                      onChange={(e) => updateFaqEntry(index, "enabled", e.target.checked)}
+                    />
+                    Ativa
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeFaqEntry(index)}
+                    className="text-xs text-red-400 hover:text-red-300"
+                  >
+                    Remover
+                  </button>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">Pergunta</span>
+                  <input
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                    value={entry.question || ""}
+                    onChange={(e) => updateFaqEntry(index, "question", e.target.value)}
+                    placeholder="Ex.: A tatuagem dói?"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">
+                    Palavras-chave (separadas por vírgula)
+                  </span>
+                  <input
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                    value={Array.isArray(entry.keywords) ? entry.keywords.join(", ") : ""}
+                    onChange={(e) =>
+                      updateFaqEntry(
+                        index,
+                        "keywords",
+                        e.target.value
+                          .split(",")
+                          .map((k) => k.trim())
+                          .filter(Boolean),
+                      )
+                    }
+                    placeholder="dor, doer, machuca"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">Resposta (cliente)</span>
+                  <textarea
+                    rows={2}
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                    value={entry.answer || ""}
+                    onChange={(e) => updateFaqEntry(index, "answer", e.target.value)}
+                    placeholder="Texto enviado / base oficial da IA"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">Contexto para a IA</span>
+                  <textarea
+                    rows={2}
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                    value={entry.aiContext || ""}
+                    onChange={(e) => updateFaqEntry(index, "aiContext", e.target.value)}
+                    placeholder="Tom, exceções, o que NÃO prometer"
+                  />
+                </label>
+              </div>
+            ))}
+            {(settings.faqEntries || []).length === 0 ? (
+              <p className="text-sm text-zinc-500">
+                Nenhuma dúvida cadastrada. Salve a config ou adicione linhas manualmente.
+              </p>
+            ) : null}
           </div>
         </section>
 

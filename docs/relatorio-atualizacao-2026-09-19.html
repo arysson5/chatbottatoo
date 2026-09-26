@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Relatório de Atualização — Chatbot Briza Tattoo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #1a1512;
+      --ink-soft: #3d342e;
+      --paper: #f7f1e8;
+      --paper-2: #efe6d8;
+      --line: #d9cbb8;
+      --accent: #c45c26;
+      --accent-soft: #f0d8c8;
+      --ok: #2f6b4f;
+      --ok-soft: #d8ebe1;
+      --warn: #8a5a12;
+      --warn-soft: #f3e6c8;
+      --shadow: 0 18px 50px rgba(26, 21, 18, 0.08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, #f0d8c8 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 100% 0%, #d8ebe1 0%, transparent 45%),
+        var(--paper);
+      font-family: "DM Sans", system-ui, sans-serif;
+      line-height: 1.55;
+    }
+
+    .wrap {
+      width: min(920px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2.5rem 0 4rem;
+    }
+
+    header.hero {
+      padding: 2.2rem 0 1.5rem;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 2rem;
+      animation: rise 0.7s ease both;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.85rem;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 1.4rem;
+      height: 2px;
+      background: var(--accent);
+    }
+
+    h1 {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-weight: 400;
+      font-size: clamp(2.2rem, 5vw, 3.4rem);
+      line-height: 1.08;
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .lead {
+      font-size: 1.08rem;
+      color: var(--ink-soft);
+      max-width: 38rem;
+      margin: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 1.4rem;
+    }
+
+    .chip {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.35rem 0.85rem;
+      font-size: 0.85rem;
+      color: var(--ink-soft);
+    }
+
+    .chip strong { color: var(--ink); font-weight: 600; }
+
+    section {
+      margin: 2.4rem 0;
+      animation: rise 0.7s ease both;
+    }
+
+    section:nth-of-type(2) { animation-delay: 0.05s; }
+    section:nth-of-type(3) { animation-delay: 0.1s; }
+    section:nth-of-type(4) { animation-delay: 0.15s; }
+    section:nth-of-type(5) { animation-delay: 0.2s; }
+
+    h2 {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-weight: 400;
+      font-size: clamp(1.6rem, 3vw, 2rem);
+      margin: 0 0 0.5rem;
+    }
+
+    .section-intro {
+      color: var(--ink-soft);
+      margin: 0 0 1.25rem;
+      max-width: 40rem;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.9rem;
+    }
+
+    @media (max-width: 720px) {
+      .summary-grid { grid-template-columns: 1fr; }
+    }
+
+    .stat {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1.15rem 1.2rem;
+      box-shadow: var(--shadow);
+    }
+
+    .stat .n {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-size: 2.2rem;
+      line-height: 1;
+      color: var(--accent);
+      margin-bottom: 0.35rem;
+    }
+
+    .stat .l {
+      font-size: 0.92rem;
+      color: var(--ink-soft);
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1.35rem 1.4rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow);
+      transition: transform 0.25s ease, box-shadow 0.25s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 22px 55px rgba(26, 21, 18, 0.11);
+    }
+
+    .card-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.55rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .badge {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.28rem 0.6rem;
+      border-radius: 999px;
+    }
+
+    .badge-problem { background: var(--warn-soft); color: var(--warn); }
+    .badge-fix { background: var(--ok-soft); color: var(--ok); }
+
+    .card h3 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 650;
+      flex: 1 1 auto;
+    }
+
+    .cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 720px) {
+      .cols { grid-template-columns: 1fr; }
+    }
+
+    .box {
+      border-radius: 14px;
+      padding: 0.95rem 1rem;
+    }
+
+    .box-problem {
+      background: #fff8ef;
+      border: 1px solid #ecd9b5;
+    }
+
+    .box-fix {
+      background: #f2faf5;
+      border: 1px solid #c7e4d3;
+    }
+
+    .box strong {
+      display: block;
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 0.35rem;
+    }
+
+    .box-problem strong { color: var(--warn); }
+    .box-fix strong { color: var(--ok); }
+
+    .box p {
+      margin: 0;
+      font-size: 0.98rem;
+      color: var(--ink-soft);
+    }
+
+    ul.clean {
+      margin: 0.4rem 0 0;
+      padding-left: 1.15rem;
+      color: var(--ink-soft);
+    }
+
+    ul.clean li { margin: 0.35rem 0; }
+
+    .timeline {
+      border-left: 2px solid var(--line);
+      margin-left: 0.55rem;
+      padding-left: 1.25rem;
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 1.25rem;
+    }
+
+    .timeline-item::before {
+      content: "";
+      position: absolute;
+      left: -1.55rem;
+      top: 0.35rem;
+      width: 0.7rem;
+      height: 0.7rem;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid #fff;
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+
+    .timeline-item time {
+      font-size: 0.8rem;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .timeline-item h3 {
+      margin: 0.15rem 0 0.35rem;
+      font-size: 1.05rem;
+    }
+
+    .timeline-item p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.95rem;
+    }
+
+    .callout {
+      background: linear-gradient(135deg, #1a1512 0%, #3a2c24 100%);
+      color: #f7f1e8;
+      border-radius: var(--radius);
+      padding: 1.5rem 1.6rem;
+      box-shadow: var(--shadow);
+    }
+
+    .callout h2 {
+      color: #fff;
+      margin-bottom: 0.55rem;
+    }
+
+    .callout p {
+      margin: 0;
+      color: rgba(247, 241, 232, 0.86);
+      max-width: 40rem;
+    }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+      margin: 1rem 0 0;
+      display: grid;
+      gap: 0.55rem;
+    }
+
+    .checklist li {
+      display: flex;
+      gap: 0.65rem;
+      align-items: flex-start;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      padding: 0.75rem 0.9rem;
+      color: rgba(247, 241, 232, 0.92);
+      font-size: 0.95rem;
+    }
+
+    .checklist li span {
+      color: #9fd6b6;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    footer {
+      margin-top: 2.5rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      color: var(--ink-soft);
+      font-size: 0.88rem;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .card, .stat, .callout { box-shadow: none; }
+      .card:hover { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="eyebrow">Relatório para o cliente</div>
+      <h1>Atualização do chatbot WhatsApp</h1>
+      <p class="lead">
+        Resumo simples do que melhoramos no sistema do estúdio:
+        mais estabilidade no atendimento, menos mensagens repetidas
+        e inteligência artificial mais confiável — sem perder as configurações do painel.
+      </p>
+      <div class="meta">
+        <span class="chip"><strong>Cliente:</strong> Briza Tattoo</span>
+        <span class="chip"><strong>Data:</strong> 19/09/2026</span>
+        <span class="chip"><strong>Ambiente:</strong> Servidor em produção (Hostinger)</span>
+        <span class="chip"><strong>Status:</strong> Atualizado e validado</span>
+        <span class="chip"><strong>Testes:</strong> 133/133 passando</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>Em uma frase</h2>
+      <p class="section-intro">
+        O bot ficou mais estável com vários números, parou de “spammar” o cliente em reconexões
+        e ganhou um motor de IA novo — mantendo preços, leads e senha do painel.
+      </p>
+      <div class="summary-grid">
+        <div class="stat">
+          <div class="n">3</div>
+          <div class="l">grandes melhorias entregues nesta atualização</div>
+        </div>
+        <div class="stat">
+          <div class="n">133/133</div>
+          <div class="l">testes automatizados passando na atualização</div>
+        </div>
+        <div class="stat">
+          <div class="n">0</div>
+          <div class="l">perda de dados do painel (preços, leads e números preservados)</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Problemas que resolvemos</h2>
+      <p class="section-intro">
+        Cada item abaixo mostra o que incomodava no dia a dia e como ficou agora —
+        em linguagem direta, sem termos técnicos.
+      </p>
+
+      <article class="card">
+        <div class="card-top">
+          <span class="badge badge-problem">Problema 1</span>
+          <h3>Cliente recebia várias mensagens de uma vez</h3>
+        </div>
+        <div class="cols">
+          <div class="box box-problem">
+            <strong>Antes</strong>
+            <p>
+              Quando o WhatsApp reconectava (queda de internet, celular, etc.),
+              o bot às vezes reenviava o menu ou mensagens antigas em sequência —
+              parecia “flood” ou spam.
+            </p>
+          </div>
+          <div class="box box-fix">
+            <strong>Agora</strong>
+            <p>
+              O sistema tem proteção anti-flood: ele identifica reconexões e evita
+              disparar a mesma conversa de novo sem necessidade.
+            </p>
+          </div>
+        </div>
+        <ul class="clean">
+          <li>Menos confusão para o cliente final</li>
+          <li>Atendimento mais limpo e profissional</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="card-top">
+          <span class="badge badge-problem">Problema 2</span>
+          <h3>Dois números “misturavam” a conversa</h3>
+        </div>
+        <div class="cols">
+          <div class="box box-problem">
+            <strong>Antes</strong>
+            <p>
+              Com mais de um WhatsApp no ar, o estado da conversa (menu, orçamento, agendamento)
+              podia se cruzar entre números — o bot “esquecia” em qual linha estava falando.
+            </p>
+          </div>
+          <div class="box box-fix">
+            <strong>Agora</strong>
+            <p>
+              Cada conversa fica isolada por <em>número do estúdio + cliente</em>.
+              Um atendimento não interfere no outro.
+            </p>
+          </div>
+        </div>
+        <ul class="clean">
+          <li>Ideal para quem usa mais de uma linha / instância</li>
+          <li>Orçamento, PIX e agendamento seguem o fluxo certo</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="card-top">
+          <span class="badge badge-problem">Problema 3</span>
+          <h3>Instabilidade ao cair e voltar a conexão</h3>
+        </div>
+        <div class="cols">
+          <div class="box box-problem">
+            <strong>Antes</strong>
+            <p>
+              Quedas de conexão do WhatsApp geravam comportamento estranho:
+              mensagens duplicadas, mute inconsistente ou necessidade de intervenção manual.
+            </p>
+          </div>
+          <div class="box box-fix">
+            <strong>Agora</strong>
+            <p>
+              Melhorias de reconexão e mute: o bot sabe quando silenciar e quando retomar.
+              A suíte de testes automatizados passou <strong>133 de 133</strong> (100%).
+            </p>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-top">
+          <span class="badge badge-problem">Problema 4</span>
+          <h3>Dependência de um único provedor de IA (Gemini)</h3>
+        </div>
+        <div class="cols">
+          <div class="box box-problem">
+            <strong>Antes</strong>
+            <p>
+              Linguagem natural e leitura de comprovante PIX dependiam basicamente do Google Gemini.
+              Limite de cota, custo ou indisponibilidade afetavam o atendimento.
+            </p>
+          </div>
+          <div class="box box-fix">
+            <strong>Agora</strong>
+            <p>
+              Entramos com o <strong>OmniRoute</strong>: um “roteador” de IA que escolhe
+              modelos gratuitos/disponíveis automaticamente, sem travar o bot num único fornecedor.
+            </p>
+          </div>
+        </div>
+        <ul class="clean">
+          <li>Melhor continuidade na leitura de comprovantes e respostas naturais</li>
+          <li>Menos risco de “IA fora do ar” por cota de um único serviço</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="card-top">
+          <span class="badge badge-problem">Problema 5</span>
+          <h3>Medo de perder configurações ao atualizar o servidor</h3>
+        </div>
+        <div class="cols">
+          <div class="box box-problem">
+            <strong>Antes</strong>
+            <p>
+              Em atualizações, havia risco de “zerar” o painel
+              (preços, números da secretaria, leads, senha) se o procedimento fosse feito de forma errada.
+            </p>
+          </div>
+          <div class="box box-fix">
+            <strong>Agora</strong>
+            <p>
+              Nesta atualização fizemos <strong>backup completo</strong> antes de qualquer mudança
+              e subimos o código <strong>sem apagar</strong> o banco nem as sessões do WhatsApp.
+            </p>
+          </div>
+        </div>
+        <ul class="clean">
+          <li>Painel validado depois: preços, leads, PIX, handoff e senha intactos</li>
+          <li>Sessões de WhatsApp preservadas no volume do servidor</li>
+        </ul>
+      </article>
+    </section>
+
+    <section>
+      <h2>O que o cliente ganha no dia a dia</h2>
+      <div class="card">
+        <ul class="clean">
+          <li><strong>Atendimento mais profissional</strong> — menos mensagens repetidas e confusas.</li>
+          <li><strong>Vários números com segurança</strong> — cada linha trabalha no seu fluxo.</li>
+          <li><strong>IA mais resiliente</strong> — OmniRoute ajuda em conversa e comprovante PIX.</li>
+          <li><strong>Painel intacto</strong> — configurações que a equipe já cadastrou continuam valendo.</li>
+          <li><strong>Atualização com cuidado</strong> — backup + validação antes de liberar.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Linha do tempo desta entrega</h2>
+      <div class="timeline">
+        <div class="timeline-item">
+          <time>Commit 1 — estabilidade</time>
+          <h3>Anti-flood e multi-número</h3>
+          <p>Proteção contra spam pós-reconexão e isolamento das conversas por linha + cliente.</p>
+        </div>
+        <div class="timeline-item">
+          <time>Commit 2 — inteligência</time>
+          <h3>OmniRoute no lugar do Gemini exclusivo</h3>
+          <p>Novo serviço de IA no servidor, integrado ao chatbot para NLP e comprovantes.</p>
+        </div>
+        <div class="timeline-item">
+          <time>19/09/2026 — produção</time>
+          <h3>Atualização na Hostinger</h3>
+          <p>
+            Backup do banco e sessões → atualização do código → OmniRoute no ar →
+            conferência de que o painel não perdeu dados.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="callout">
+        <h2>Checklist de validação (produção)</h2>
+        <p>Itens conferidos após a atualização no servidor:</p>
+        <ul class="checklist">
+          <li><span>✓</span> Painel responde normalmente (login com senha já existente)</li>
+          <li><span>✓</span> Preços, números gerenciados, secretaria e leads preservados</li>
+          <li><span>✓</span> Configurações de PIX e handoff mantidas</li>
+          <li><span>✓</span> WhatsApp / Evolution API operacional</li>
+          <li><span>✓</span> OmniRoute (IA) ativo no servidor</li>
+          <li><span>✓</span> Backup salvo no servidor para eventual restauração</li>
+          <li><span>✓</span> 133/133 testes automatizados passando (anti-flood, multi-número e fluxos críticos)</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Como explicar em 30 segundos</h2>
+      <div class="card">
+        <p style="margin:0; color: var(--ink-soft); font-size: 1.05rem;">
+          “Atualizamos o chatbot para ele não mandar mensagem em excesso quando a internet oscila,
+          para funcionar direito com mais de um número, e trocamos a inteligência artificial
+          por um sistema mais estável. Tudo isso sem apagar o que já estava configurado no painel.”
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      Relatório de atualização — Chatbot WhatsApp Briza Tattoo · 19/09/2026<br />
+      Documento destinado à comunicação com o cliente · linguagem não técnica.
+    </footer>
+  </div>
+</body>
+</html>

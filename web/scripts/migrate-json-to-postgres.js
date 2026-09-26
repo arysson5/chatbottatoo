@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { withDefaults } from "@/lib/db-defaults";
-import { isPostgresEmpty, persistDbSnapshot } from "@/lib/postgres-db";
-import { prisma } from "@/lib/prisma";
+import { withDefaults } from "../lib/db-defaults.js";
+import { isPostgresEmpty, persistDbSnapshot } from "../lib/postgres-db.js";
+import { prisma } from "../lib/prisma.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JSON_PATH = path.join(__dirname, "..", "data", "app-db.json");

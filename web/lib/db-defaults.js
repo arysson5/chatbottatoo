@@ -1,4 +1,5 @@
 import { normalizeManagedNumbersList } from "@/lib/managed-numbers";
+import { DEFAULT_FAQ_ENTRIES, normalizeFaqEntries } from "@/lib/faq-tattoo-tribal";
 
 export const MAX_USED_PIX_TRANSACTIONS = 300;
 export const MAX_LEADS = 200;
@@ -64,6 +65,10 @@ export function createDefaultDb() {
         refreshToken: "",
         connectedAt: "",
       },
+      faqEntries: DEFAULT_FAQ_ENTRIES.map((e) => ({
+        ...e,
+        keywords: [...e.keywords],
+      })),
     },
     pricing: DEFAULT_PRICING,
     leads: [],
@@ -116,6 +121,7 @@ export function withDefaults(db) {
         ...(db?.settings?.googleCalendar || {}),
       },
       secretaryNumbers: resolveSecretaryNumbers(db?.settings || {}),
+      faqEntries: normalizeFaqEntries(db?.settings?.faqEntries),
     },
     pricing: Array.isArray(db?.pricing)
       ? db.pricing.map((row) => ({

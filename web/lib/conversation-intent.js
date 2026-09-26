@@ -1,5 +1,51 @@
 import { parseUserIntent, isGeminiConfigured } from "@/lib/gemini";
 
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+export function normalizeIntentText(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isAffirmative(text) {
+  const normalized = normalizeIntentText(text);
+  if (!normalized) return false;
+  if (
+    /^(sim|s|yes|si|isso|isso mesmo|exato|exatamente|claro|logico|logica|com certeza|pode|pode ser|pode sim|ok|okay|blz|beleza|fechado|fechou|bora|vamos|quero|confirmo|confirma|afirmativo|positivo|uhum|ahas|aham)$/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return /^(sim|isso|claro|logico|pode ser|fechado|beleza|confirmo)\b/.test(normalized);
+}
+
+/**
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isNegative(text) {
+  const normalized = normalizeIntentText(text);
+  if (!normalized) return false;
+  if (
+    /^(nao|n|no|nah|nop|nunca|negativo|de jeito nenhum|agora nao|melhor nao|continuar|bot)$/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return /^(nao|nunca|negativo|melhor nao)\b/.test(normalized);
+}
+
 const WORD_TO_NUMBER = {
   um: 1,
   uma: 1,
@@ -33,11 +79,7 @@ const WORD_TO_NUMBER = {
  * @returns {string}
  */
 function normalizeWord(text) {
-  return String(text || "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+  return normalizeIntentText(text);
 }
 
 /**

@@ -3,7 +3,7 @@ import { matchLocalFaqAnswer, FAQ_MENU_TEXT } from "@/lib/faq-tattoo-tribal";
 import { answerTattooFaq, isGeminiConfigured } from "@/lib/gemini";
 import { resolveOptionChoice } from "@/lib/conversation-intent";
 import { askClientName, startClientDataFlow } from "@/lib/flows/client-data-flow";
-import { resetConfusion } from "@/lib/human-handoff";
+import { resetConfusion, offerHumanChoice } from "@/lib/human-handoff";
 
 export async function handleFaqFlow(ctx) {
   const { number, text, db, sendText, clientName, instance = "" } = ctx;
@@ -51,18 +51,31 @@ export async function handleFaqFlow(ctx) {
     return true;
   }
 
-  let answer = matchLocalFaqAnswer(trimmed);
+  const faqEntries = db?.settings?.faqEntries;
+  let answer = matchLocalFaqAnswer(trimmed, faqEntries);
   if (!answer && isGeminiConfigured()) {
-    answer = await answerTattooFaq(trimmed, {
-      selectedAreas: schedule.selectedAreas,
-      estimatedTotal: schedule.estimatedTotal,
-    });
+    answer = await answerTattooFaq(
+      trimmed,
+      {
+        selectedAreas: schedule.selectedAreas,
+        estimatedTotal: schedule.estimatedTotal,
+      },
+      faqEntries,
+    );
   }
   if (!answer) {
-    answer =
-      "Boa pergunta! Para esse detalhe, o artista confirma no atendimento. Quer agendar? Digite 1 ou AGENDAR. 📅";
+    await sendText(
+      number,
+      offerHumanChoice(
+        number,
+        "Boa pergunta! Não tenho essa resposta cadastrada com segurança no painel.",
+        instance,
+      ),
+    );
+    return true;
   }
 
+  resetConfusion(number, instance);
   await sendText(number, `${answer}\n\n${FAQ_MENU_TEXT}`);
   return true;
 }

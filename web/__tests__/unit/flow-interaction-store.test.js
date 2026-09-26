@@ -85,14 +85,23 @@ describe("flow-interaction-store", () => {
             updatedAt: new Date(now).toISOString(),
             expiresAt: new Date(now + 86400000).toISOString(),
           },
+          {
+            number: "5511666555444",
+            step: INTERACTION_STEPS.CATALOG_AREAS_CONFIRM,
+            data: { suggestedAreas: [1, 3, 4], createdAt: now },
+            updatedAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + 86400000).toISOString(),
+          },
         ],
       };
 
       const maps = {
         pendingPollByNumber: new Map(),
         pendingCatalogAreasByNumber: new Map(),
+        pendingCatalogAreaConfirmByNumber: new Map(),
         pendingPostQuoteChoiceByNumber: new Map(),
         pendingHandoffAreasByNumber: new Map(),
+        pendingHandoffAreaConfirmByNumber: new Map(),
         pendingHandoffPhotosByNumber: new Map(),
       };
 
@@ -102,6 +111,9 @@ describe("flow-interaction-store", () => {
       expect(maps.pendingCatalogAreasByNumber.has(scope("5511888777666"))).toBe(true);
       expect(maps.pendingPostQuoteChoiceByNumber.get(scope("5511777666555"))).toEqual(
         expect.objectContaining({ total: 3000 }),
+      );
+      expect(maps.pendingCatalogAreaConfirmByNumber.get(scope("5511666555444"))).toEqual(
+        expect.objectContaining({ suggestedAreas: [1, 3, 4] }),
       );
     });
 

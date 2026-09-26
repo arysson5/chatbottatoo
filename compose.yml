@@ -110,7 +110,8 @@ services:
       AI_MODEL: auto
       AI_API_KEY: ${AI_API_KEY:-}
     # db:seed só importa se Postgres estiver vazio e app-db.json tiver config (nunca apaga dados existentes)
-    command: sh -c "npm install --silent 2>/dev/null && npm run db:provision && npm run db:migrate && npm run db:seed && npm run dev -- --hostname 0.0.0.0"
+    # || true: falha de seed não pode impedir o Next de subir (dados já estão no Postgres)
+    command: sh -c "npm install --silent 2>/dev/null && npm run db:provision && npm run db:migrate && (npm run db:seed || true) && npm run dev -- --hostname 0.0.0.0"
     healthcheck:
       test:
         [

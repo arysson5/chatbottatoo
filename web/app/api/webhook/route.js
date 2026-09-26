@@ -17,7 +17,7 @@ import {
   startFaqFlow,
 } from "@/lib/flows/flow-registry";
 import { sendToSecretaries, getSecretaryNumbers } from "@/lib/secretary-notify";
-import { hasSchedulingFlow, clearSchedulingFlows } from "@/lib/flows/flow-store";
+import { hasSchedulingFlow, clearSchedulingFlows, getPendingSchedule, removePendingSchedule } from "@/lib/flows/flow-store";
 import { isInPixFlow } from "@/lib/flows/pix-flow";
 import { muteNumberInDraft, resolveHandoffMutes } from "@/lib/handoff-mute";
 import { hasPixProofMedia } from "@/lib/message-media";
@@ -41,12 +41,19 @@ import {
   hydrateInteractionMaps,
   persistMainMenu,
   persistCatalogAreas,
+  persistCatalogAreasConfirm,
   persistPostQuote,
   persistHandoffAreas,
+  persistHandoffAreasConfirm,
   persistHandoffPhotos,
   clearMenuFlow,
   clearInteraction,
 } from "@/lib/flow-interaction-store";
+import {
+  resolveAreaSelection,
+  buildAreaConfirmMessage,
+  isAreaConfirmationAffirmative,
+} from "@/lib/pricing-areas";
 import {
   filterInboundEntries,
   markMessageSeen,
@@ -83,8 +90,10 @@ const pendingPollByMessageId = new Map();
 const pendingPollByNumber = new Map();
 const recentCatalogByNumber = new Map();
 const pendingCatalogAreasByNumber = new Map();
+const pendingCatalogAreaConfirmByNumber = new Map();
 const pendingPostQuoteChoiceByNumber = new Map();
 const pendingHandoffAreasByNumber = new Map();
+const pendingHandoffAreaConfirmByNumber = new Map();
 const pendingHandoffPhotosByNumber = new Map();
 const recentBotOutboundTextByNumber = new Map();
 const recentBotOutboundMediaByNumber = new Map();
@@ -95,8 +104,10 @@ function getInteractionMaps() {
   return {
     pendingPollByNumber,
     pendingCatalogAreasByNumber,
+    pendingCatalogAreaConfirmByNumber,
     pendingPostQuoteChoiceByNumber,
     pendingHandoffAreasByNumber,
+    pendingHandoffAreaConfirmByNumber,
     pendingHandoffPhotosByNumber,
   };
 }
@@ -162,8 +173,10 @@ function hasActiveFlow(number, db, instance = "") {
     isAwaitingHumanChoice(number, instance) ||
     hasPendingPoll(number, instance) ||
     pendingCatalogAreasByNumber.has(scopeKey) ||
+    pendingCatalogAreaConfirmByNumber.has(scopeKey) ||
     pendingPostQuoteChoiceByNumber.has(scopeKey) ||
     pendingHandoffAreasByNumber.has(scopeKey) ||
+    pendingHandoffAreaConfirmByNumber.has(scopeKey) ||
     pendingHandoffPhotosByNumber.has(scopeKey) ||
     hasSchedulingFlow(db, number, instance)
   );
@@ -242,7 +255,9 @@ function getFlowMemory() {
   return {
     pendingPostQuoteChoiceByNumber,
     pendingCatalogAreasByNumber,
+    pendingCatalogAreaConfirmByNumber,
     pendingHandoffAreasByNumber,
+    pendingHandoffAreaConfirmByNumber,
     pendingHandoffPhotosByNumber,
     pendingPollByNumber,
     hasPendingPoll: (n, inst) => hasPendingPoll(n, inst),
@@ -321,15 +336,108 @@ async function applyPostQuoteChoice(choice, params) {
 }
 
 /**
- * @param {string} text
- * @returns {number[]}
+ * @param {string} baseUrl
+ * @param {string} instance
+ * @param {string} apiKey
+ * @param {string} number
+ * @param {string} clientName
+ * @param {number[]} selectedAreas
+ * @param {object[]} pricingTable
+ * @param {(n: string, text: string) => Promise<unknown>} sendCapped
  */
-function extractAreaNumbers(text) {
-  const matches = String(text || "").match(/\d+/g) || [];
-  const values = matches
-    .map((value) => Number(value))
-    .filter((value) => Number.isInteger(value) && value > 0);
-  return [...new Set(values)];
+async function issueCatalogQuoteFromAreas({
+  number,
+  clientName,
+  selectedAreas,
+  pricingTable,
+  instance,
+  sendCapped,
+}) {
+  const areaRows = selectedAreas.map((area) => {
+    const match = pricingTable.find((row) => Number(row?.area) === area);
+    const rawPrice = String(match?.tattooNova || "");
+    const numeric = parseCurrencyToNumber(rawPrice);
+    return { area, rawPrice, numeric };
+  });
+  const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
+  const validityDate = getValidityDateLabel(QUOTE_VALIDITY_DAYS);
+  const breakdown = areaRows
+    .map((row) => {
+      const display = row.rawPrice ? row.rawPrice : "sob consulta";
+      return `• Área ${row.area}: ${display}`;
+    })
+    .join("\n");
+
+  await sendCapped(
+    number,
+    `Fechado, ${clientName}! 🔥\nCom base nas áreas que você marcou, montei seu orçamento personalizado:\n\n${breakdown}\n\n💰 Total estimado: ${formatBRL(total)}\n🗓️ Validade deste orçamento: até ${validityDate} (${QUOTE_VALIDITY_DAYS} dias)\n\nEsse é um valor base para o estilo Tattoo Nova. No atendimento final, a gente ajusta tamanho, detalhes e encaixe da arte pra fechar certinho no seu projeto.`,
+  );
+  await sendCapped(
+    number,
+    "Me diz como quer seguir:\n1 - Agendar 📅\n2 - Tirar dúvida 💬\n\n🚀 Para travar sua data, responda: AGENDAR",
+  );
+
+  pendingCatalogAreasByNumber.delete(makeScopeKey(instance, number));
+  pendingCatalogAreaConfirmByNumber.delete(makeScopeKey(instance, number));
+  const quoteIssuedAtMs = Date.now();
+  const postQuoteData = {
+    createdAt: quoteIssuedAtMs,
+    quoteIssuedAtMs,
+    quoteExpiresAtMs: quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
+    selectedAreas,
+    estimatedTotal: total,
+  };
+  await persistPostQuote(number, postQuoteData, getInteractionMaps(), instance);
+  await clearInteraction(number, "catalog_areas", instance);
+  await clearInteraction(number, "catalog_areas_confirm", instance);
+  resetConfusion(number, instance);
+}
+
+/**
+ * @param {object} params
+ */
+async function continueHandoffFromAreas({
+  number,
+  clientName,
+  projectType,
+  selectedAreas,
+  pricingTable,
+  instance,
+  sendCapped,
+}) {
+  const pricingField = getPricingFieldByProjectType(projectType);
+  const areaRows = selectedAreas.map((area) => {
+    const match = pricingTable.find((row) => Number(row?.area) === area);
+    const rawPrice = String(match?.[pricingField] || "");
+    const numeric = parseCurrencyToNumber(rawPrice);
+    return { area, rawPrice, numeric };
+  });
+  const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
+  const breakdown = areaRows
+    .map((row) => {
+      const display = row.rawPrice ? row.rawPrice : "sob consulta";
+      return `• Área ${row.area}: ${display}`;
+    })
+    .join("\n");
+
+  await sendCapped(
+    number,
+    `Perfeito, ${clientName}! ✅\nSe quiser, você pode me enviar fotos da tattoo atual para ajudar na avaliação do especialista 📸\nSe preferir seguir sem foto, é só responder normalmente que eu continuo.`,
+  );
+
+  const scopeKey = makeScopeKey(instance, number);
+  pendingHandoffAreasByNumber.delete(scopeKey);
+  pendingHandoffAreaConfirmByNumber.delete(scopeKey);
+  const handoffPhotoData = {
+    projectType,
+    selectedAreas,
+    total,
+    breakdown,
+    capturedAt: Date.now(),
+  };
+  await persistHandoffPhotos(number, handoffPhotoData, getInteractionMaps(), instance);
+  await clearInteraction(number, "handoff_areas", instance);
+  await clearInteraction(number, "handoff_areas_confirm", instance);
 }
 
 /**
@@ -1349,12 +1457,90 @@ export async function POST(request) {
         continue;
       }
 
+      if (pendingHandoffAreaConfirmByNumber.has(scopeKey) && normalizedText) {
+        const confirmData = pendingHandoffAreaConfirmByNumber.get(scopeKey) || {};
+        const projectType =
+          confirmData?.projectType === "reformar" ? "reformar" : "complementar";
+
+        if (isAreaConfirmationAffirmative(normalizedText)) {
+          const suggestedAreas = Array.isArray(confirmData.suggestedAreas)
+            ? confirmData.suggestedAreas.map(Number)
+            : [];
+          if (!suggestedAreas.length) {
+            await sendCapped(
+              number,
+              processConfusionReply(
+                number,
+                "Não consegui confirmar as áreas. Me envie os números separados por vírgula (ex: 1,3,4).",
+                instance,
+              ),
+            );
+            continue;
+          }
+          await continueHandoffFromAreas({
+            number,
+            clientName,
+            projectType,
+            selectedAreas: suggestedAreas,
+            pricingTable,
+            instance,
+            sendCapped,
+          });
+          continue;
+        }
+
+        const resolved = resolveAreaSelection(normalizedText, pricingTable);
+        if (resolved.status === "empty") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              buildAreaConfirmMessage(confirmData.suggestedAreas || []) ||
+                "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        if (resolved.status === "confirm") {
+          await persistHandoffAreasConfirm(
+            number,
+            { projectType, suggestedAreas: resolved.suggestedAreas },
+            getInteractionMaps(),
+            instance,
+          );
+          await sendCapped(number, buildAreaConfirmMessage(resolved.suggestedAreas));
+          continue;
+        }
+        if (resolved.status === "retry") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        await continueHandoffFromAreas({
+          number,
+          clientName,
+          projectType,
+          selectedAreas: resolved.areas,
+          pricingTable,
+          instance,
+          sendCapped,
+        });
+        continue;
+      }
+
       if (pendingHandoffAreasByNumber.has(scopeKey) && normalizedText) {
         const handoffContext = pendingHandoffAreasByNumber.get(scopeKey);
         const projectType =
           handoffContext?.projectType === "reformar" ? "reformar" : "complementar";
-        const selectedAreas = extractAreaNumbers(normalizedText);
-        if (selectedAreas.length === 0) {
+        const resolved = resolveAreaSelection(normalizedText, pricingTable);
+        if (resolved.status === "empty") {
           await sendCapped(
             number,
             processConfusionReply(
@@ -1365,36 +1551,36 @@ export async function POST(request) {
           );
           continue;
         }
-
-        const pricingField = getPricingFieldByProjectType(projectType);
-        const areaRows = selectedAreas.map((area) => {
-          const match = pricingTable.find((row) => Number(row?.area) === area);
-          const rawPrice = String(match?.[pricingField] || "");
-          const numeric = parseCurrencyToNumber(rawPrice);
-          return { area, rawPrice, numeric };
-        });
-        const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
-        const breakdown = areaRows
-          .map((row) => {
-            const display = row.rawPrice ? row.rawPrice : "sob consulta";
-            return `• Área ${row.area}: ${display}`;
-          })
-          .join("\n");
-
-        await sendCapped(
+        if (resolved.status === "confirm") {
+          await persistHandoffAreasConfirm(
+            number,
+            { projectType, suggestedAreas: resolved.suggestedAreas },
+            getInteractionMaps(),
+            instance,
+          );
+          await sendCapped(number, buildAreaConfirmMessage(resolved.suggestedAreas));
+          continue;
+        }
+        if (resolved.status === "retry") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        await continueHandoffFromAreas({
           number,
-          `Perfeito, ${clientName}! ✅\nSe quiser, você pode me enviar fotos da tattoo atual para ajudar na avaliação do especialista 📸\nSe preferir seguir sem foto, é só responder normalmente que eu continuo.`,
-        );
-        pendingHandoffAreasByNumber.delete(scopeKey);
-        const handoffPhotoData = {
+          clientName,
           projectType,
-          selectedAreas,
-          total,
-          breakdown,
-          capturedAt: Date.now(),
-        };
-        await persistHandoffPhotos(number, handoffPhotoData, getInteractionMaps(), instance);
-        await clearInteraction(number, "handoff_areas", instance);
+          selectedAreas: resolved.areas,
+          pricingTable,
+          instance,
+          sendCapped,
+        });
         continue;
       }
 
@@ -1461,13 +1647,89 @@ Ação recomendada:
         pendingHandoffPhotosByNumber.delete(scopeKey);
         pendingPollByNumber.delete(scopeKey);
         pendingCatalogAreasByNumber.delete(scopeKey);
+        pendingCatalogAreaConfirmByNumber.delete(scopeKey);
+        pendingHandoffAreaConfirmByNumber.delete(scopeKey);
         pendingPostQuoteChoiceByNumber.delete(scopeKey);
         continue;
       }
 
+      if (pendingCatalogAreaConfirmByNumber.has(scopeKey) && normalizedText) {
+        const confirmData = pendingCatalogAreaConfirmByNumber.get(scopeKey) || {};
+
+        if (isAreaConfirmationAffirmative(normalizedText)) {
+          const suggestedAreas = Array.isArray(confirmData.suggestedAreas)
+            ? confirmData.suggestedAreas.map(Number)
+            : [];
+          if (!suggestedAreas.length) {
+            await sendCapped(
+              number,
+              processConfusionReply(
+                number,
+                "Não consegui confirmar as áreas. Me envie os números separados por vírgula (ex: 1,3,4).",
+                instance,
+              ),
+            );
+            continue;
+          }
+          await issueCatalogQuoteFromAreas({
+            number,
+            clientName,
+            selectedAreas: suggestedAreas,
+            pricingTable,
+            instance,
+            sendCapped,
+          });
+          continue;
+        }
+
+        const resolved = resolveAreaSelection(normalizedText, pricingTable);
+        if (resolved.status === "empty") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              buildAreaConfirmMessage(confirmData.suggestedAreas || []) ||
+                "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        if (resolved.status === "confirm") {
+          await persistCatalogAreasConfirm(
+            number,
+            resolved.suggestedAreas,
+            getInteractionMaps(),
+            instance,
+          );
+          await sendCapped(number, buildAreaConfirmMessage(resolved.suggestedAreas));
+          continue;
+        }
+        if (resolved.status === "retry") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        await issueCatalogQuoteFromAreas({
+          number,
+          clientName,
+          selectedAreas: resolved.areas,
+          pricingTable,
+          instance,
+          sendCapped,
+        });
+        continue;
+      }
+
       if (pendingCatalogAreasByNumber.has(scopeKey) && normalizedText) {
-        const selectedAreas = extractAreaNumbers(normalizedText);
-        if (selectedAreas.length === 0) {
+        const resolved = resolveAreaSelection(normalizedText, pricingTable);
+        if (resolved.status === "empty") {
           await sendCapped(
             number,
             processConfusionReply(
@@ -1478,42 +1740,35 @@ Ação recomendada:
           );
           continue;
         }
-
-        const areaRows = selectedAreas.map((area) => {
-          const match = pricingTable.find((row) => Number(row?.area) === area);
-          const rawPrice = String(match?.tattooNova || "");
-          const numeric = parseCurrencyToNumber(rawPrice);
-          return { area, rawPrice, numeric };
+        if (resolved.status === "confirm") {
+          await persistCatalogAreasConfirm(
+            number,
+            resolved.suggestedAreas,
+            getInteractionMaps(),
+            instance,
+          );
+          await sendCapped(number, buildAreaConfirmMessage(resolved.suggestedAreas));
+          continue;
+        }
+        if (resolved.status === "retry") {
+          await sendCapped(
+            number,
+            processConfusionReply(
+              number,
+              "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
+              instance,
+            ),
+          );
+          continue;
+        }
+        await issueCatalogQuoteFromAreas({
+          number,
+          clientName,
+          selectedAreas: resolved.areas,
+          pricingTable,
+          instance,
+          sendCapped,
         });
-        const total = areaRows.reduce((sum, row) => sum + row.numeric, 0);
-        const validityDate = getValidityDateLabel(QUOTE_VALIDITY_DAYS);
-        const breakdown = areaRows
-          .map((row) => {
-            const display = row.rawPrice ? row.rawPrice : "sob consulta";
-            return `• Área ${row.area}: ${display}`;
-          })
-          .join("\n");
-
-        await sendCapped(
-          number,
-          `Fechado, ${clientName}! 🔥\nCom base nas áreas que você marcou, montei seu orçamento personalizado:\n\n${breakdown}\n\n💰 Total estimado: ${formatBRL(total)}\n🗓️ Validade deste orçamento: até ${validityDate} (${QUOTE_VALIDITY_DAYS} dias)\n\nEsse é um valor base para o estilo Tattoo Nova. No atendimento final, a gente ajusta tamanho, detalhes e encaixe da arte pra fechar certinho no seu projeto.`,
-        );
-        await sendCapped(
-          number,
-          "Me diz como quer seguir:\n1 - Agendar 📅\n2 - Tirar dúvida 💬\n\n🚀 Para travar sua data, responda: AGENDAR",
-        );
-        pendingCatalogAreasByNumber.delete(scopeKey);
-        const quoteIssuedAtMs = Date.now();
-        const postQuoteData = {
-          createdAt: quoteIssuedAtMs,
-          quoteIssuedAtMs,
-          quoteExpiresAtMs: quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000,
-          selectedAreas,
-          estimatedTotal: total,
-        };
-        await persistPostQuote(number, postQuoteData, getInteractionMaps(), instance);
-        await clearInteraction(number, "catalog_areas", instance);
-        resetConfusion(number, instance);
         continue;
       }
 
@@ -1627,18 +1882,13 @@ Ação recomendada:
           instance,
         });
 
-        if (
-          flowResult.optionId !== undefined &&
-          flowResult.flowContext?.step === "post_quote_choice"
-        ) {
-          const quoteContext = pendingPostQuoteChoiceByNumber.get(scopeKey) || {};
+        const quoteContext = pendingPostQuoteChoiceByNumber.get(scopeKey) || {};
+        const buildPostQuoteParams = () => {
           const selectedAreas = Array.isArray(quoteContext.selectedAreas)
             ? quoteContext.selectedAreas
             : [];
           const estimatedTotal =
-            typeof quoteContext.estimatedTotal === "number"
-              ? quoteContext.estimatedTotal
-              : 0;
+            typeof quoteContext.estimatedTotal === "number" ? quoteContext.estimatedTotal : 0;
           const quoteIssuedAtMs =
             typeof quoteContext.quoteIssuedAtMs === "number"
               ? quoteContext.quoteIssuedAtMs
@@ -1647,23 +1897,183 @@ Ação recomendada:
             typeof quoteContext.quoteExpiresAtMs === "number"
               ? quoteContext.quoteExpiresAtMs
               : quoteIssuedAtMs + QUOTE_VALIDITY_DAYS * 24 * 60 * 60 * 1000;
+          return {
+            evolutionBase,
+            instance,
+            apiKey,
+            number,
+            clientName,
+            selectedAreas,
+            estimatedTotal,
+            quoteIssuedAtMs,
+            quoteExpiresAtMs,
+            pricingTable,
+          };
+        };
 
-          if (
-            await applyPostQuoteChoice(flowResult.optionId, {
+        if (
+          flowResult.optionId !== undefined &&
+          flowResult.flowContext?.step === "post_quote_choice"
+        ) {
+          if (await applyPostQuoteChoice(flowResult.optionId, buildPostQuoteParams())) {
+            continue;
+          }
+        }
+
+        if (
+          flowResult.optionId !== undefined &&
+          flowResult.flowContext?.step === "faq" &&
+          flowResult.optionId === 1
+        ) {
+          const scheduleFaq = getPendingSchedule(db, number, instance);
+          if (scheduleFaq?.step === "faq") {
+            resetConfusion(number, instance);
+            await removePendingSchedule(number, instance);
+            await beginAgendarFlow(
               evolutionBase,
               instance,
               apiKey,
               number,
               clientName,
-              selectedAreas,
-              estimatedTotal,
-              quoteIssuedAtMs,
-              quoteExpiresAtMs,
+              {
+                selectedAreas: scheduleFaq.selectedAreas || [],
+                estimatedTotal: scheduleFaq.estimatedTotal || 0,
+                quoteIssuedAt: scheduleFaq.quoteIssuedAt || null,
+                quoteExpiresAt: scheduleFaq.quoteExpiresAt || null,
+                instance,
+              },
               pricingTable,
-            })
-          ) {
+            );
             continue;
           }
+        }
+
+        if (flowResult.coachAction === "guide" && flowResult.wantSchedule) {
+          const step = flowResult.flowContext?.step;
+          if (step === "post_quote_choice") {
+            if (await applyPostQuoteChoice(1, buildPostQuoteParams())) {
+              continue;
+            }
+          }
+          if (step === "faq") {
+            const scheduleFaq = getPendingSchedule(db, number, instance);
+            if (scheduleFaq?.step === "faq") {
+              resetConfusion(number, instance);
+              await removePendingSchedule(number, instance);
+              await beginAgendarFlow(
+                evolutionBase,
+                instance,
+                apiKey,
+                number,
+                clientName,
+                {
+                  selectedAreas: scheduleFaq.selectedAreas || [],
+                  estimatedTotal: scheduleFaq.estimatedTotal || 0,
+                  quoteIssuedAt: scheduleFaq.quoteIssuedAt || null,
+                  quoteExpiresAt: scheduleFaq.quoteExpiresAt || null,
+                  instance,
+                },
+                pricingTable,
+              );
+              continue;
+            }
+          }
+          if (flowResult.coachMessage) {
+            await sendCapped(number, flowResult.coachMessage);
+          }
+          continue;
+        }
+
+        if (
+          flowResult.mappedValue === "yes" &&
+          (flowResult.flowContext?.step === "post_quote_choice" ||
+            flowResult.flowContext?.step === "faq")
+        ) {
+          const step = flowResult.flowContext?.step;
+          if (step === "post_quote_choice") {
+            if (await applyPostQuoteChoice(1, buildPostQuoteParams())) {
+              continue;
+            }
+          }
+          if (step === "faq") {
+            const scheduleFaq = getPendingSchedule(db, number, instance);
+            if (scheduleFaq?.step === "faq") {
+              resetConfusion(number, instance);
+              await removePendingSchedule(number, instance);
+              await beginAgendarFlow(
+                evolutionBase,
+                instance,
+                apiKey,
+                number,
+                clientName,
+                {
+                  selectedAreas: scheduleFaq.selectedAreas || [],
+                  estimatedTotal: scheduleFaq.estimatedTotal || 0,
+                  quoteIssuedAt: scheduleFaq.quoteIssuedAt || null,
+                  quoteExpiresAt: scheduleFaq.quoteExpiresAt || null,
+                  instance,
+                },
+                pricingTable,
+              );
+              continue;
+            }
+          }
+        }
+
+        if (
+          flowResult.mappedValue === "yes" &&
+          pendingCatalogAreaConfirmByNumber.has(scopeKey)
+        ) {
+          const confirmData = pendingCatalogAreaConfirmByNumber.get(scopeKey) || {};
+          const suggestedAreas = Array.isArray(confirmData.suggestedAreas)
+            ? confirmData.suggestedAreas.map(Number)
+            : [];
+          if (suggestedAreas.length) {
+            await issueCatalogQuoteFromAreas({
+              number,
+              clientName,
+              selectedAreas: suggestedAreas,
+              pricingTable,
+              instance,
+              sendCapped,
+            });
+            continue;
+          }
+        }
+
+        if (
+          flowResult.mappedValue === "yes" &&
+          pendingHandoffAreaConfirmByNumber.has(scopeKey)
+        ) {
+          const confirmData = pendingHandoffAreaConfirmByNumber.get(scopeKey) || {};
+          const projectType =
+            confirmData?.projectType === "reformar" ? "reformar" : "complementar";
+          const suggestedAreas = Array.isArray(confirmData.suggestedAreas)
+            ? confirmData.suggestedAreas.map(Number)
+            : [];
+          if (suggestedAreas.length) {
+            await continueHandoffFromAreas({
+              number,
+              clientName,
+              projectType,
+              selectedAreas: suggestedAreas,
+              pricingTable,
+              instance,
+              sendCapped,
+            });
+            continue;
+          }
+        }
+
+        if (
+          flowResult.coachAction === "answer" ||
+          flowResult.coachAction === "offer_human" ||
+          flowResult.coachAction === "guide"
+        ) {
+          if (flowResult.coachMessage) {
+            await sendCapped(number, flowResult.coachMessage);
+          }
+          continue;
         }
 
         if (flowResult.reminder) {

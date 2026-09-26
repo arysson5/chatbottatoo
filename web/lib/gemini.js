@@ -1,5 +1,6 @@
 import { parseSlotRequestLocal } from "@/lib/slot-filters";
 import { parseProofAmount } from "@/lib/pix-proof-parser";
+import { formatFaqKnowledgeForPrompt } from "@/lib/faq-tattoo-tribal";
 
 export const PIX_RECEIPT_MIN_CONFIDENCE = 0.35;
 
@@ -394,18 +395,91 @@ export async function extractPixAmountFromImage(base64, mimeType) {
   return { amount: proof.amount, confidence: proof.confidence, rawText: "" };
 }
 
-export async function answerTattooFaq(question, quoteContext) {
+export async function answerTattooFaq(question, quoteContext = {}, faqEntries) {
   if (!getAiConfig()) return null;
 
-  const prompt = `Assistente tattoo Neo Tribal. Resposta curta em português (máx 4 frases).
-Orçamento: ${quoteContext.estimatedTotal || "N/A"} | Áreas: ${(quoteContext.selectedAreas || []).join(", ")}
-Pergunta: ${question}`;
+  const kb = formatFaqKnowledgeForPrompt(faqEntries);
+  const prompt = `Assistente de estúdio de tattoo (WhatsApp, português BR). Resposta curta (máx 4 frases).
+Use APENAS a base de conhecimento abaixo. Se a pergunta não couber nela, responda exatamente: NAO_SEI
+
+Base de conhecimento:
+${kb}
+
+Orçamento atual: ${quoteContext.estimatedTotal || "N/A"} | Áreas: ${(quoteContext.selectedAreas || []).join(", ") || "N/A"}
+Pergunta do cliente: ${question}`;
 
   try {
     const result = await completeText(prompt, { json: false });
-    return result.text.trim();
+    const text = result.text.trim();
+    if (!text || /^NAO_SEI\b/i.test(text)) return null;
+    return text;
   } catch (error) {
     console.error("[omniroute] answerTattooFaq falhou", error);
+    return null;
+  }
+}
+
+/**
+ * Interpreta mensagem fora do script local dentro de um fluxo ativo.
+ * @param {object} flowContext
+ * @param {string} userMessage
+ * @param {{ quoteContext?: object, faqEntries?: unknown }} [extra]
+ */
+export async function interpretInFlowMessage(flowContext, userMessage, extra = {}) {
+  if (!getAiConfig()) return null;
+
+  const kb = formatFaqKnowledgeForPrompt(extra.faqEntries);
+  const quoteContext = extra.quoteContext || {};
+  const options = Array.isArray(flowContext?.options) ? flowContext.options : [];
+
+  const prompt = `Você é o copiloto de um chatbot de tattoo no WhatsApp (português BR).
+Classifique a mensagem do cliente DENTRO do passo atual. Não invente dados fora da base.
+
+Estado: ${flowContext?.state || "unknown"}
+Passo: ${flowContext?.step || ""}
+Descrição: ${flowContext?.description || ""}
+Opções: ${JSON.stringify(options)}
+Orçamento: ${quoteContext.estimatedTotal ?? "N/A"} | Áreas: ${(quoteContext.selectedAreas || []).join(", ") || "N/A"}
+
+Base de dúvidas (painel):
+${kb}
+
+Exemplos:
+- "claro", "lógico", "pode ser", "fechado" com opção sim → equivalent_answer mappedValue "yes"
+- "nah", "negativo" → equivalent_answer mappedValue "no"
+- "quero agendar" / "bora marcar" → want_schedule
+- pergunta sobre dor/sessão/cuidados coberta na base → ask_question knowsAnswer true + answer
+- pergunta sem cobertura na base → ask_question knowsAnswer false
+- "não entendi" / "como assim" → confused
+- assunto totalmente fora → out_of_scope
+
+Mensagem: "${userMessage}"
+
+Responda APENAS JSON:
+{
+  "intent": "equivalent_answer"|"ask_question"|"want_schedule"|"confused"|"out_of_scope",
+  "mappedOptionId": null,
+  "mappedValue": "yes"|"no"|null,
+  "answer": null,
+  "knowsAnswer": false,
+  "guideHint": null,
+  "confidence": 0.0
+}`;
+
+  try {
+    const result = await completeText(prompt, { json: true });
+    const parsed = parseJsonContent(result.text);
+    return {
+      intent: String(parsed?.intent || "confused"),
+      mappedOptionId: typeof parsed?.mappedOptionId === "number" ? parsed.mappedOptionId : null,
+      mappedValue: parsed?.mappedValue ? String(parsed.mappedValue) : null,
+      answer: parsed?.answer ? String(parsed.answer).trim() : null,
+      knowsAnswer: Boolean(parsed?.knowsAnswer),
+      guideHint: parsed?.guideHint ? String(parsed.guideHint).trim() : null,
+      confidence: typeof parsed?.confidence === "number" ? parsed.confidence : 0,
+    };
+  } catch (error) {
+    console.error("[omniroute] interpretInFlowMessage falhou", error);
     return null;
   }
 }

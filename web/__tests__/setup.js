@@ -8,5 +8,8 @@ jest.mock("@/lib/gemini", () => ({
   isGeminiConfigured: jest.fn(() => false),
   parseUserIntent: jest.fn(async () => null),
   parseSlotRequest: jest.fn(async () => null),
+  parseFlowIntent: jest.fn(async () => null),
   extractPixProofFromImage: jest.fn(async () => null),
+  answerTattooFaq: jest.fn(async () => null),
+  interpretInFlowMessage: jest.fn(async () => null),
 }));

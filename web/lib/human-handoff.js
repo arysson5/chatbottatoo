@@ -4,7 +4,7 @@ import { getPendingSchedule, getPendingPayment } from "@/lib/flows/flow-store";
 import { detectFlowContext } from "@/lib/flow-context";
 import { sendToSecretaries, getSecretaryNumbers } from "@/lib/secretary-notify";
 import { muteNumberInDraft } from "@/lib/handoff-mute";
-import { resolveOptionChoice } from "@/lib/conversation-intent";
+import { resolveOptionChoice, isAffirmative, isNegative } from "@/lib/conversation-intent";
 import { resolveOriginFromInstance } from "@/lib/managed-numbers";
 import { makeScopeKey } from "@/lib/scope-key";
 
@@ -72,6 +72,27 @@ export function processConfusionReply(number, baseMessage, instance = "") {
 }
 
 /**
+ * Oferece atendente humano imediatamente (FAQ sem resposta / IA sem KB).
+ * @param {string} number
+ * @param {string} [baseMessage]
+ * @param {string} [instance]
+ * @returns {string}
+ */
+export function offerHumanChoice(
+  number,
+  baseMessage = "Não tenho essa informação cadastrada com segurança.",
+  instance = "",
+) {
+  const key = makeScopeKey(instance, number);
+  confusionByScope.set(key, {
+    count: CONFUSION_THRESHOLD,
+    awaitingChoice: true,
+    offeredAt: Date.now(),
+  });
+  return `${baseMessage}\n\n${HUMAN_OFFER_BLOCK}`;
+}
+
+/**
  * @param {string} text
  * @returns {Promise<"yes" | "no" | null>}
  */
@@ -79,10 +100,10 @@ export async function parseHumanHandoffChoice(text) {
   const normalized = String(text || "").trim();
   if (!normalized) return null;
 
-  if (/^(sim|s|quero|atendente|humano|falar com|1|1\.|yes)$/i.test(normalized)) {
+  if (isAffirmative(normalized) || /^(quero|atendente|humano|falar com|1|1\.)$/i.test(normalized)) {
     return "yes";
   }
-  if (/^(nao|não|n|continuar|bot|2|2\.|no)$/i.test(normalized)) {
+  if (isNegative(normalized) || /^(continuar|bot|2|2\.)$/i.test(normalized)) {
     return "no";
   }
 

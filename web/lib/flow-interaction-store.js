@@ -4,8 +4,10 @@ import { makeScopeKey, rowMatchesScope } from "@/lib/scope-key";
 export const INTERACTION_STEPS = {
   MAIN_MENU: "main_menu",
   CATALOG_AREAS: "catalog_areas",
+  CATALOG_AREAS_CONFIRM: "catalog_areas_confirm",
   POST_QUOTE: "post_quote",
   HANDOFF_AREAS: "handoff_areas",
+  HANDOFF_AREAS_CONFIRM: "handoff_areas_confirm",
   HANDOFF_PHOTOS: "handoff_photos",
 };
 
@@ -128,11 +130,21 @@ export function hydrateInteractionMaps(db, maps) {
       case INTERACTION_STEPS.CATALOG_AREAS:
         maps.pendingCatalogAreasByNumber.set(scopeKey, createdAt);
         break;
+      case INTERACTION_STEPS.CATALOG_AREAS_CONFIRM:
+        if (maps.pendingCatalogAreaConfirmByNumber) {
+          maps.pendingCatalogAreaConfirmByNumber.set(scopeKey, data);
+        }
+        break;
       case INTERACTION_STEPS.POST_QUOTE:
         maps.pendingPostQuoteChoiceByNumber.set(scopeKey, data);
         break;
       case INTERACTION_STEPS.HANDOFF_AREAS:
         maps.pendingHandoffAreasByNumber.set(scopeKey, data);
+        break;
+      case INTERACTION_STEPS.HANDOFF_AREAS_CONFIRM:
+        if (maps.pendingHandoffAreaConfirmByNumber) {
+          maps.pendingHandoffAreaConfirmByNumber.set(scopeKey, data);
+        }
         break;
       case INTERACTION_STEPS.HANDOFF_PHOTOS:
         maps.pendingHandoffPhotosByNumber.set(scopeKey, data);
@@ -164,7 +176,27 @@ export async function persistCatalogAreas(number, maps, instance = "") {
   const createdAt = Date.now();
   const scopeKey = makeScopeKey(instance, number);
   maps.pendingCatalogAreasByNumber.set(scopeKey, createdAt);
+  maps.pendingCatalogAreaConfirmByNumber?.delete(scopeKey);
+  await clearInteraction(number, INTERACTION_STEPS.CATALOG_AREAS_CONFIRM, instance);
   await upsertInteraction(number, INTERACTION_STEPS.CATALOG_AREAS, { createdAt }, instance);
+}
+
+/**
+ * @param {string} number
+ * @param {number[]} suggestedAreas
+ * @param {object} maps
+ * @param {string} [instance]
+ */
+export async function persistCatalogAreasConfirm(number, suggestedAreas, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  const data = {
+    createdAt: Date.now(),
+    suggestedAreas: Array.isArray(suggestedAreas) ? suggestedAreas.map(Number) : [],
+  };
+  maps.pendingCatalogAreasByNumber.delete(scopeKey);
+  maps.pendingCatalogAreaConfirmByNumber?.set(scopeKey, data);
+  await clearInteraction(number, INTERACTION_STEPS.CATALOG_AREAS, instance);
+  await upsertInteraction(number, INTERACTION_STEPS.CATALOG_AREAS_CONFIRM, data, instance);
 }
 
 /**
@@ -188,7 +220,30 @@ export async function persistPostQuote(number, data, maps, instance = "") {
 export async function persistHandoffAreas(number, data, maps, instance = "") {
   const scopeKey = makeScopeKey(instance, number);
   maps.pendingHandoffAreasByNumber.set(scopeKey, data);
+  maps.pendingHandoffAreaConfirmByNumber?.delete(scopeKey);
+  await clearInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS_CONFIRM, instance);
   await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS, data, instance);
+}
+
+/**
+ * @param {string} number
+ * @param {object} data
+ * @param {object} maps
+ * @param {string} [instance]
+ */
+export async function persistHandoffAreasConfirm(number, data, maps, instance = "") {
+  const scopeKey = makeScopeKey(instance, number);
+  const payload = {
+    createdAt: Date.now(),
+    ...(data && typeof data === "object" ? data : {}),
+    suggestedAreas: Array.isArray(data?.suggestedAreas)
+      ? data.suggestedAreas.map(Number)
+      : [],
+  };
+  maps.pendingHandoffAreasByNumber.delete(scopeKey);
+  maps.pendingHandoffAreaConfirmByNumber?.set(scopeKey, payload);
+  await clearInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS, instance);
+  await upsertInteraction(number, INTERACTION_STEPS.HANDOFF_AREAS_CONFIRM, payload, instance);
 }
 
 /**
@@ -212,8 +267,10 @@ export async function clearMenuFlow(number, maps, instance = "") {
   const scopeKey = makeScopeKey(instance, number);
   maps.pendingPollByNumber.delete(scopeKey);
   maps.pendingCatalogAreasByNumber.delete(scopeKey);
+  maps.pendingCatalogAreaConfirmByNumber?.delete(scopeKey);
   maps.pendingPostQuoteChoiceByNumber.delete(scopeKey);
   maps.pendingHandoffAreasByNumber.delete(scopeKey);
+  maps.pendingHandoffAreaConfirmByNumber?.delete(scopeKey);
   maps.pendingHandoffPhotosByNumber.delete(scopeKey);
   await clearAllInteractions(number, instance);
 }
