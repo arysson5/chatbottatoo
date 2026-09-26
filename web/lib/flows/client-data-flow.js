@@ -13,6 +13,7 @@ import { sendToSecretaries } from "@/lib/secretary-notify";
 import { parsePhoneResponse } from "@/lib/gemini";
 import { formatSlotsMessage } from "@/lib/slot-filters";
 import { processConfusionReply, resetConfusion } from "@/lib/human-handoff";
+import { resolveUnexpectedMessage } from "@/lib/flow-router";
 
 export function buildLeadSummary(schedule, settings) {
   const areas = Array.isArray(schedule.selectedAreas) ? schedule.selectedAreas.join(", ") : "-";
@@ -72,13 +73,24 @@ export async function handleClientDataFlow(ctx) {
       if (digits.length >= 10 && digits.length <= 13) {
         phone = digits;
       } else {
+        const unexpected = await resolveUnexpectedMessage({
+          db,
+          number,
+          text: trimmed,
+          instance,
+          flowContext: {
+            state: "coleta_telefone",
+            step: "phone",
+            description: "Cliente deve informar telefone ou dizer que é o mesmo do WhatsApp.",
+            options: [],
+          },
+          fallbackReminder:
+            'Não entendi o telefone. Envie com DDD (ex: 11999998888) ou diga "é o mesmo número".',
+        });
         await sendText(
           number,
-          processConfusionReply(
-            number,
+          unexpected.message ||
             'Não entendi o telefone. Envie com DDD (ex: 11999998888) ou diga "é o mesmo número".',
-            instance,
-          ),
         );
         return true;
       }

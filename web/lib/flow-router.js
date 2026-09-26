@@ -5,6 +5,96 @@ import { processConfusionReply } from "@/lib/human-handoff";
 import { handleAiCoachTurn, looksLikeQuestion, looksConfused } from "@/lib/ai-flow-coach";
 
 /**
+ * Quando o passo não reconheceu o dado esperado: tenta IA/FAQ só se precisar.
+ * @param {object} params
+ * @returns {Promise<{
+ *   kind: 'select_option'|'continue_value'|'answer'|'offer_human'|'guide'|'reminder',
+ *   optionId?: number,
+ *   mappedValue?: string,
+ *   message?: string,
+ *   wantSchedule?: boolean,
+ *   flowContext?: object,
+ * }>}
+ */
+export async function resolveUnexpectedMessage(params) {
+  const {
+    db,
+    number,
+    text,
+    instance = "",
+    memory,
+    flowContext: givenContext,
+    fallbackReminder,
+  } = params;
+
+  const flowContext =
+    givenContext || detectFlowContext(db, number, memory || {}, instance);
+  const reminderBase = fallbackReminder || getFlowReminderMessage(flowContext);
+
+  if (!String(text || "").trim()) {
+    return {
+      kind: "reminder",
+      message: processConfusionReply(number, reminderBase, instance),
+      flowContext,
+    };
+  }
+
+  const coach = await handleAiCoachTurn({
+    db,
+    number,
+    text,
+    flowContext: flowContext || {
+      state: "unknown",
+      step: "unknown",
+      description: "Mensagem fora do script do passo atual.",
+      options: [],
+    },
+    memory,
+    instance,
+  });
+
+  if (coach.action === "select_option" && typeof coach.optionId === "number") {
+    return {
+      kind: "select_option",
+      optionId: coach.optionId,
+      flowContext: coach.flowContext || flowContext,
+    };
+  }
+  if (coach.action === "continue_value") {
+    return {
+      kind: "continue_value",
+      mappedValue: coach.mappedValue,
+      flowContext: coach.flowContext || flowContext,
+    };
+  }
+  if (
+    coach.action === "answer" ||
+    coach.action === "offer_human" ||
+    coach.action === "guide"
+  ) {
+    return {
+      kind: coach.action,
+      message: coach.message,
+      wantSchedule: Boolean(coach.wantSchedule),
+      flowContext: coach.flowContext || flowContext,
+    };
+  }
+  if (coach.action === "reminder" && coach.message) {
+    return {
+      kind: "reminder",
+      message: coach.message,
+      flowContext: coach.flowContext || flowContext,
+    };
+  }
+
+  return {
+    kind: "reminder",
+    message: processConfusionReply(number, reminderBase, instance),
+    flowContext,
+  };
+}
+
+/**
  * Tenta interpretar mensagem dentro do fluxo ativo (regex local + Gemini).
  * @param {object} params
  * @returns {Promise<number | null>} optionId quando aplicável

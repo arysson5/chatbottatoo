@@ -15,6 +15,7 @@ import { buildLeadSummary } from "@/lib/flows/client-data-flow";
 import { sendToSecretaries } from "@/lib/secretary-notify";
 import { detectPixProofMedia, mimeForGeminiProof } from "@/lib/message-media";
 import { resetConfusion } from "@/lib/human-handoff";
+import { resolveUnexpectedMessage } from "@/lib/flow-router";
 import { analyzePixProof } from "@/lib/pix-proof-pipeline";
 import {
   findUsedPixTransaction,
@@ -215,6 +216,25 @@ export async function handlePixFlow(ctx) {
       return true;
     }
   } else {
+    if (trimmed) {
+      const unexpected = await resolveUnexpectedMessage({
+        db,
+        number,
+        text: trimmed,
+        instance,
+        flowContext: {
+          state: "pix_comprovante",
+          step: "pix",
+          description: "Cliente deve enviar comprovante PIX (imagem) do sinal.",
+          options: [],
+        },
+        fallbackReminder: `Envie o comprovante PIX (foto ou PDF) do sinal de ${formatBRL(amountRequired)}.`,
+      });
+      if (unexpected.kind === "answer" || unexpected.kind === "offer_human") {
+        await sendText(number, unexpected.message);
+        return true;
+      }
+    }
     await sendText(
       number,
       `Envie o comprovante PIX (foto ou PDF) do sinal de ${formatBRL(amountRequired)}.`,

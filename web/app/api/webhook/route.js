@@ -9,7 +9,7 @@ import { getCatalogoBase64 } from "@/lib/catalogo-media";
 import { readDb, updateDb } from "@/lib/simple-db";
 import { parseCurrencyToNumber, formatBRL } from "@/lib/currency";
 import { resolveOptionChoice } from "@/lib/conversation-intent";
-import { handleUnknownInActiveFlow } from "@/lib/flow-router";
+import { handleUnknownInActiveFlow, resolveUnexpectedMessage } from "@/lib/flow-router";
 import {
   processSchedulingFlows,
   startClientDataFlow,
@@ -262,6 +262,42 @@ function getFlowMemory() {
     pendingPollByNumber,
     hasPendingPoll: (n, inst) => hasPendingPoll(n, inst),
   };
+}
+
+/**
+ * Mensagem fora do dado esperado do passo → FAQ/IA só se precisar; senão reminder.
+ */
+async function sendUnexpectedInStep({
+  db,
+  number,
+  text,
+  instance,
+  sendCapped,
+  step,
+  state,
+  description,
+  options = [],
+  fallbackReminder,
+}) {
+  const unexpected = await resolveUnexpectedMessage({
+    db,
+    number,
+    text,
+    instance,
+    memory: getFlowMemory(),
+    flowContext: {
+      state: state || step,
+      step,
+      description: description || "",
+      options,
+    },
+    fallbackReminder:
+      fallbackReminder || getFlowReminderMessage({ step }),
+  });
+  if (unexpected.message) {
+    await sendCapped(number, unexpected.message);
+  }
+  return unexpected;
 }
 
 /**
@@ -1446,14 +1482,38 @@ export async function POST(request) {
           continue;
         }
 
-        await sendCapped(
+        const unexpectedPost = await resolveUnexpectedMessage({
+          db,
           number,
-          processConfusionReply(
-            number,
-            getFlowReminderMessage({ step: "post_quote_choice" }),
-            instance,
-          ),
-        );
+          text: normalizedText || interactiveSelection,
+          instance,
+          memory: getFlowMemory(),
+          flowContext: {
+            state: "pos_orcamento",
+            step: "post_quote_choice",
+            description: "Cliente escolhe agendar ou tirar dúvida após orçamento.",
+            options: [
+              { id: 1, label: "Agendar" },
+              { id: 2, label: "Tirar dúvida" },
+            ],
+          },
+          fallbackReminder: getFlowReminderMessage({ step: "post_quote_choice" }),
+        });
+        if (
+          unexpectedPost.kind === "select_option" &&
+          (await applyPostQuoteChoice(unexpectedPost.optionId, postQuoteParams))
+        ) {
+          resetConfusion(number, instance);
+          continue;
+        }
+        if (unexpectedPost.kind === "guide" && unexpectedPost.wantSchedule) {
+          if (await applyPostQuoteChoice(1, postQuoteParams)) {
+            continue;
+          }
+        }
+        if (unexpectedPost.message) {
+          await sendCapped(number, unexpectedPost.message);
+        }
         continue;
       }
 
@@ -1491,15 +1551,20 @@ export async function POST(request) {
 
         const resolved = resolveAreaSelection(normalizedText, pricingTable);
         if (resolved.status === "empty") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "handoff_areas_confirm",
+            state: "handoff_areas_confirm",
+            description: "Confirmação de áreas no handoff.",
+            options: [{ id: 1, label: "Sim, confirmar" }],
+            fallbackReminder:
               buildAreaConfirmMessage(confirmData.suggestedAreas || []) ||
-                "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+              "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
+          });
           continue;
         }
         if (resolved.status === "confirm") {
@@ -1513,14 +1578,18 @@ export async function POST(request) {
           continue;
         }
         if (resolved.status === "retry") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "handoff_areas_confirm",
+            state: "handoff_areas_confirm",
+            description: "Áreas inválidas na confirmação de handoff.",
+            fallbackReminder:
               "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         await continueHandoffFromAreas({
@@ -1541,14 +1610,18 @@ export async function POST(request) {
           handoffContext?.projectType === "reformar" ? "reformar" : "complementar";
         const resolved = resolveAreaSelection(normalizedText, pricingTable);
         if (resolved.status === "empty") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "handoff_areas",
+            state: "handoff_areas",
+            description: "Cliente deve enviar números das áreas para reforma/complemento.",
+            fallbackReminder:
               "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 2, 6 e 9).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         if (resolved.status === "confirm") {
@@ -1562,14 +1635,18 @@ export async function POST(request) {
           continue;
         }
         if (resolved.status === "retry") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "handoff_areas",
+            state: "handoff_areas",
+            description: "Números de área inválidos no handoff.",
+            fallbackReminder:
               "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         await continueHandoffFromAreas({
@@ -1684,15 +1761,20 @@ Ação recomendada:
 
         const resolved = resolveAreaSelection(normalizedText, pricingTable);
         if (resolved.status === "empty") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "catalog_areas_confirm",
+            state: "catalog_areas_confirm",
+            description: "Confirmação de áreas do catálogo.",
+            options: [{ id: 1, label: "Sim, confirmar" }],
+            fallbackReminder:
               buildAreaConfirmMessage(confirmData.suggestedAreas || []) ||
-                "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+              "Diga *sim* para confirmar ou envie os números separados por vírgula (ex: 1,3,4).",
+          });
           continue;
         }
         if (resolved.status === "confirm") {
@@ -1706,14 +1788,18 @@ Ação recomendada:
           continue;
         }
         if (resolved.status === "retry") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "catalog_areas_confirm",
+            state: "catalog_areas_confirm",
+            description: "Áreas inválidas na confirmação do catálogo.",
+            fallbackReminder:
               "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         await issueCatalogQuoteFromAreas({
@@ -1730,14 +1816,18 @@ Ação recomendada:
       if (pendingCatalogAreasByNumber.has(scopeKey) && normalizedText) {
         const resolved = resolveAreaSelection(normalizedText, pricingTable);
         if (resolved.status === "empty") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "catalog_areas",
+            state: "catalog_areas",
+            description: "Cliente deve enviar números das áreas do catálogo.",
+            fallbackReminder:
               "Não consegui identificar os números das áreas. Me envie apenas os números (ex: 1, 4 e 7).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         if (resolved.status === "confirm") {
@@ -1751,14 +1841,18 @@ Ação recomendada:
           continue;
         }
         if (resolved.status === "retry") {
-          await sendCapped(
+          await sendUnexpectedInStep({
+            db,
             number,
-            processConfusionReply(
-              number,
+            text: normalizedText,
+            instance,
+            sendCapped,
+            step: "catalog_areas",
+            state: "catalog_areas",
+            description: "Números de área inválidos no catálogo.",
+            fallbackReminder:
               "Não encontrei essas áreas no catálogo. Envie os números separados por vírgula (ex: 1,3,4).",
-              instance,
-            ),
-          );
+          });
           continue;
         }
         await issueCatalogQuoteFromAreas({
@@ -1841,14 +1935,71 @@ Ação recomendada:
           continue;
         }
 
-        await sendCapped(
+        const unexpectedMenu = await resolveUnexpectedMessage({
+          db,
           number,
-          processConfusionReply(
-            number,
-            getFlowReminderMessage({ step: "main_menu" }),
-            instance,
-          ),
-        );
+          text: normalizedText || interactiveSelection,
+          instance,
+          memory: getFlowMemory(),
+          flowContext: {
+            state: "menu_principal",
+            step: "main_menu",
+            description: "Menu inicial: tipo de projeto.",
+            options: [
+              { id: 1, label: "Nova Tattoo" },
+              { id: 2, label: "Reformar" },
+              { id: 3, label: "Complementar" },
+            ],
+          },
+          fallbackReminder: getFlowReminderMessage({ step: "main_menu" }),
+        });
+
+        if (unexpectedMenu.kind === "select_option") {
+          if (unexpectedMenu.optionId === 1) {
+            resetConfusion(number, instance);
+            await sendCatalogFlow(evolutionBase, instance, apiKey, number, catalogPrompt);
+            pendingPollByNumber.delete(scopeKey);
+            await clearInteraction(number, "main_menu", instance);
+            await persistCatalogAreas(number, getInteractionMaps(), instance);
+            continue;
+          }
+          if (unexpectedMenu.optionId === 2) {
+            await sendCatalog(evolutionBase, instance, apiKey, number);
+            await sendCapped(
+              number,
+              "Perfeito! Para reforma, me envie os números das áreas da imagem (ex: 2, 6 e 9) para eu encaminhar seu lead completo ao especialista. ♻️",
+            );
+            await persistHandoffAreas(
+              number,
+              { projectType: "reformar", createdAt: Date.now() },
+              getInteractionMaps(),
+              instance,
+            );
+            pendingPollByNumber.delete(scopeKey);
+            await clearInteraction(number, "main_menu", instance);
+            continue;
+          }
+          if (unexpectedMenu.optionId === 3) {
+            await sendCatalog(evolutionBase, instance, apiKey, number);
+            await sendCapped(
+              number,
+              "Boa! Para complemento, me envie os números das áreas da imagem (ex: 3, 7 e 10) para eu encaminhar seu lead completo ao especialista. 🧩",
+            );
+            await persistHandoffAreas(
+              number,
+              { projectType: "complementar", createdAt: Date.now() },
+              getInteractionMaps(),
+              instance,
+            );
+            pendingPollByNumber.delete(scopeKey);
+            await clearInteraction(number, "main_menu", instance);
+            continue;
+          }
+        }
+
+        if (unexpectedMenu.message) {
+          await sendCapped(number, unexpectedMenu.message);
+        }
         continue;
       }
 

@@ -6,6 +6,7 @@ import { buildLeadSummary } from "@/lib/flows/client-data-flow";
 import { sendToSecretaries } from "@/lib/secretary-notify";
 import { filterSlots, paginateSlots, formatSlotsMessage } from "@/lib/slot-filters";
 import { processConfusionReply, resetConfusion } from "@/lib/human-handoff";
+import { resolveUnexpectedMessage } from "@/lib/flow-router";
 
 export async function handleSchedulingFlow(ctx) {
   const { number, text, db, sendText, settings, instance = "" } = ctx;
@@ -81,14 +82,20 @@ export async function handleSchedulingFlow(ctx) {
     return true;
   }
 
-  await sendText(
+  const unexpected = await resolveUnexpectedMessage({
+    db,
     number,
-    processConfusionReply(
-      number,
-      `Não entendi. Escolha pelo número ou diga "sexta", "semana que vem".\n\n${formatSlotsMessage(visibleSlots)}`,
-      instance,
-    ),
-  );
+    text: trimmed,
+    instance,
+    flowContext: {
+      state: "escolha_horario",
+      step: "slot_choice",
+      description: "Cliente escolhendo horário. Pode número, sexta, semana que vem ou mais horários.",
+      options: [],
+    },
+    fallbackReminder: `Não entendi. Escolha pelo número ou diga "sexta", "semana que vem".\n\n${formatSlotsMessage(visibleSlots)}`,
+  });
+  await sendText(number, unexpected.message);
   return true;
 }
 

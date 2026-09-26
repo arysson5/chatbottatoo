@@ -19,7 +19,9 @@ export function looksLikeQuestion(text) {
   const t = String(text || "").trim().toLowerCase();
   if (!t) return false;
   if (t.includes("?")) return true;
-  return /\b(duvida|dúvida|pergunta|quanto|como|posso|demora|dói|doi|sera|será|o que|oq)\b/.test(t);
+  return /\b(duvida|dúvida|pergunta|quanto|como|posso|demora|dói|doi|sera|será|o que|oq|so faz|só faz|fazem|voces|vocês)\b/.test(
+    t,
+  );
 }
 
 /**
@@ -67,7 +69,19 @@ export async function handleAiCoachTurn(params) {
     estimatedTotal: schedule?.estimatedTotal || 0,
   };
 
-  // Equivalentes locais yes/no quando há opções binárias ou confirmação
+  // 1) FAQ local — só assume se houver match na base (não inventa)
+  const localAnswer = matchLocalFaqAnswer(userMessage, faqEntries);
+  if (localAnswer) {
+    resetConfusion(number, instance);
+    const hint = defaultGuideHint(flowContext);
+    return {
+      action: "answer",
+      message: `${localAnswer}\n\n${hint}`,
+      flowContext,
+    };
+  }
+
+  // 2) Equivalentes locais yes/no quando o passo tem opções binárias
   const options = Array.isArray(flowContext.options) ? flowContext.options : [];
   const yesOpt = options.find((o) => /sim|agendar|atendente|confirmar/i.test(String(o.label || "")));
   const noOpt = options.find((o) => /n[aã]o|d[uú]vida|bot|continuar/i.test(String(o.label || "")));
@@ -87,22 +101,9 @@ export async function handleAiCoachTurn(params) {
     return { action: "continue_value", mappedValue: "no", flowContext };
   }
 
-  // Match FAQ local antes da IA
-  if (looksLikeQuestion(userMessage) || looksConfused(userMessage)) {
-    const localAnswer = matchLocalFaqAnswer(userMessage, faqEntries);
-    if (localAnswer) {
-      resetConfusion(number, instance);
-      const hint = defaultGuideHint(flowContext);
-      return {
-        action: "answer",
-        message: `${localAnswer}\n\n${hint}`,
-        flowContext,
-      };
-    }
-  }
-
+  // 3) Sem IA configurada: pergunta → humano; senão reminder do passo
   if (!isGeminiConfigured()) {
-    if (looksLikeQuestion(userMessage)) {
+    if (looksLikeQuestion(userMessage) || looksConfused(userMessage)) {
       return {
         action: "offer_human",
         message: offerHumanChoice(
@@ -120,13 +121,14 @@ export async function handleAiCoachTurn(params) {
     };
   }
 
+  // 4) OmniRoute — só quando local não resolveu
   const interpreted = await interpretInFlowMessage(flowContext, userMessage, {
     quoteContext,
     faqEntries,
   });
 
   if (!interpreted || interpreted.confidence < MIN_CONFIDENCE) {
-    if (looksLikeQuestion(userMessage)) {
+    if (looksLikeQuestion(userMessage) || looksConfused(userMessage)) {
       const aiAnswer = await answerTattooFaq(userMessage, quoteContext, faqEntries);
       if (aiAnswer) {
         resetConfusion(number, instance);
