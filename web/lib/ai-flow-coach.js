@@ -8,8 +8,17 @@ import { getFlowReminderMessage } from "@/lib/flow-context";
 import { isAffirmative, isNegative } from "@/lib/conversation-intent";
 import { offerHumanChoice, processConfusionReply, resetConfusion } from "@/lib/human-handoff";
 import { getPendingSchedule } from "@/lib/flows/flow-store";
+import {
+  detectNavigationIntent,
+  proposeNavigation,
+  resolveNavConfirmReply,
+  getPendingNavConfirm,
+} from "@/lib/flow-navigation";
 
 const MIN_CONFIDENCE = 0.6;
+
+const FAQ_UNKNOWN_CLIENT_MSG =
+  "Boa pergunta! Não tenho essa resposta com segurança agora. Quer que um atendente humano te ajude?";
 
 /**
  * @param {string} text
@@ -48,10 +57,12 @@ function defaultGuideHint(flowContext) {
 /**
  * @param {object} params
  * @returns {Promise<{
- *   action: 'select_option'|'continue_value'|'answer'|'offer_human'|'guide'|'reminder'|'none',
+ *   action: 'select_option'|'continue_value'|'answer'|'offer_human'|'guide'|'reminder'|'propose_navigate'|'navigate'|'cancel_navigate'|'none',
  *   optionId?: number,
  *   mappedValue?: string,
  *   message?: string,
+ *   targetStep?: string,
+ *   wantSchedule?: boolean,
  *   flowContext?: object,
  * }>}
  */
@@ -69,7 +80,49 @@ export async function handleAiCoachTurn(params) {
     estimatedTotal: schedule?.estimatedTotal || 0,
   };
 
-  // 1) FAQ local — só assume se houver match na base (não inventa)
+  // 0) Confirmação de navegação pendente tem prioridade
+  if (getPendingNavConfirm(number, instance)) {
+    const navReply = resolveNavConfirmReply(userMessage, number, instance);
+    if (navReply.action === "navigate") {
+      resetConfusion(number, instance);
+      return {
+        action: "navigate",
+        targetStep: navReply.targetStep,
+        flowContext,
+      };
+    }
+    if (navReply.action === "cancel_navigate") {
+      resetConfusion(number, instance);
+      return {
+        action: "cancel_navigate",
+        message: `${navReply.message}\n\n${defaultGuideHint(flowContext)}`,
+        flowContext,
+      };
+    }
+    if (navReply.message) {
+      return {
+        action: "propose_navigate",
+        targetStep: getPendingNavConfirm(number, instance)?.targetStep,
+        message: navReply.message,
+        flowContext,
+      };
+    }
+  }
+
+  // 1) Navegação local (voltar / errei / não é esse número) — antes de FAQ e yes/no
+  const navIntent = detectNavigationIntent(userMessage, flowContext);
+  if (navIntent && navIntent.confidence >= 0.7) {
+    resetConfusion(number, instance);
+    const proposed = proposeNavigation(number, navIntent.targetStep, instance);
+    return {
+      action: "propose_navigate",
+      targetStep: proposed.targetStep,
+      message: proposed.message,
+      flowContext,
+    };
+  }
+
+  // 2) FAQ local — só assume se houver match na base (não inventa)
   const localAnswer = matchLocalFaqAnswer(userMessage, faqEntries);
   if (localAnswer) {
     resetConfusion(number, instance);
@@ -81,7 +134,7 @@ export async function handleAiCoachTurn(params) {
     };
   }
 
-  // 2) Equivalentes locais yes/no quando o passo tem opções binárias
+  // 3) Equivalentes locais yes/no quando o passo tem opções binárias
   const options = Array.isArray(flowContext.options) ? flowContext.options : [];
   const yesOpt = options.find((o) => /sim|agendar|atendente|confirmar/i.test(String(o.label || "")));
   const noOpt = options.find((o) => /n[aã]o|d[uú]vida|bot|continuar/i.test(String(o.label || "")));
@@ -101,16 +154,12 @@ export async function handleAiCoachTurn(params) {
     return { action: "continue_value", mappedValue: "no", flowContext };
   }
 
-  // 3) Sem IA configurada: pergunta → humano; senão reminder do passo
+  // 4) Sem IA configurada: pergunta → humano; senão reminder do passo
   if (!isGeminiConfigured()) {
     if (looksLikeQuestion(userMessage) || looksConfused(userMessage)) {
       return {
         action: "offer_human",
-        message: offerHumanChoice(
-          number,
-          "Boa pergunta! Para esse detalhe preciso te passar para um atendente.",
-          instance,
-        ),
+        message: offerHumanChoice(number, FAQ_UNKNOWN_CLIENT_MSG, instance),
         flowContext,
       };
     }
@@ -121,7 +170,7 @@ export async function handleAiCoachTurn(params) {
     };
   }
 
-  // 4) OmniRoute — só quando local não resolveu
+  // 5) OmniRoute — só quando local não resolveu
   const interpreted = await interpretInFlowMessage(flowContext, userMessage, {
     quoteContext,
     faqEntries,
@@ -140,11 +189,7 @@ export async function handleAiCoachTurn(params) {
       }
       return {
         action: "offer_human",
-        message: offerHumanChoice(
-          number,
-          "Boa pergunta! Não tenho essa resposta cadastrada com segurança.",
-          instance,
-        ),
+        message: offerHumanChoice(number, FAQ_UNKNOWN_CLIENT_MSG, instance),
         flowContext,
       };
     }
@@ -156,6 +201,17 @@ export async function handleAiCoachTurn(params) {
   }
 
   const { intent } = interpreted;
+
+  if (intent === "navigate" && interpreted.targetStep) {
+    resetConfusion(number, instance);
+    const proposed = proposeNavigation(number, interpreted.targetStep, instance);
+    return {
+      action: "propose_navigate",
+      targetStep: proposed.targetStep,
+      message: proposed.message,
+      flowContext,
+    };
+  }
 
   if (intent === "equivalent_answer") {
     if (
@@ -202,11 +258,7 @@ export async function handleAiCoachTurn(params) {
     }
     return {
       action: "offer_human",
-      message: offerHumanChoice(
-        number,
-        "Boa pergunta! Para esse detalhe um atendente humano te explica melhor.",
-        instance,
-      ),
+      message: offerHumanChoice(number, FAQ_UNKNOWN_CLIENT_MSG, instance),
       flowContext,
     };
   }

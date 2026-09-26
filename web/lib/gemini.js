@@ -448,6 +448,11 @@ Exemplos:
 - "claro", "lógico", "pode ser", "fechado" com opção sim → equivalent_answer mappedValue "yes"
 - "nah", "negativo" → equivalent_answer mappedValue "no"
 - "quero agendar" / "bora marcar" → want_schedule
+- "quero voltar do começo" / "começar de novo" → navigate targetStep "main_menu"
+- "não é esse número" / "errei o telefone" → navigate targetStep "phone"
+- "errei o nome" → navigate targetStep "name"
+- "errei a área" → navigate targetStep "catalog_areas" (ou "handoff_areas" no ramo reforma)
+- "errei" / "voltar" sem alvo → navigate para o passo anterior lógico
 - pergunta sobre dor/sessão/cuidados coberta na base → ask_question knowsAnswer true + answer
 - pergunta sem cobertura na base → ask_question knowsAnswer false
 - "não entendi" / "como assim" → confused
@@ -457,9 +462,10 @@ Mensagem: "${userMessage}"
 
 Responda APENAS JSON:
 {
-  "intent": "equivalent_answer"|"ask_question"|"want_schedule"|"confused"|"out_of_scope",
+  "intent": "equivalent_answer"|"ask_question"|"want_schedule"|"navigate"|"confused"|"out_of_scope",
   "mappedOptionId": null,
   "mappedValue": "yes"|"no"|null,
+  "targetStep": "main_menu"|"catalog_areas"|"catalog_areas_confirm"|"post_quote_choice"|"faq"|"name"|"phone"|"slot_choice"|"pix"|"handoff_areas"|"handoff_areas_confirm"|"handoff_photos"|null,
   "answer": null,
   "knowsAnswer": false,
   "guideHint": null,
@@ -473,6 +479,7 @@ Responda APENAS JSON:
       intent: String(parsed?.intent || "confused"),
       mappedOptionId: typeof parsed?.mappedOptionId === "number" ? parsed.mappedOptionId : null,
       mappedValue: parsed?.mappedValue ? String(parsed.mappedValue) : null,
+      targetStep: parsed?.targetStep ? String(parsed.targetStep).trim() : null,
       answer: parsed?.answer ? String(parsed.answer).trim() : null,
       knowsAnswer: Boolean(parsed?.knowsAnswer),
       guideHint: parsed?.guideHint ? String(parsed.guideHint).trim() : null,

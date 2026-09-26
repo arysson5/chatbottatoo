@@ -8,10 +8,11 @@ import { handleAiCoachTurn, looksLikeQuestion, looksConfused } from "@/lib/ai-fl
  * Quando o passo não reconheceu o dado esperado: tenta IA/FAQ só se precisar.
  * @param {object} params
  * @returns {Promise<{
- *   kind: 'select_option'|'continue_value'|'answer'|'offer_human'|'guide'|'reminder',
+ *   kind: 'select_option'|'continue_value'|'answer'|'offer_human'|'guide'|'reminder'|'propose_navigate'|'navigate'|'cancel_navigate',
  *   optionId?: number,
  *   mappedValue?: string,
  *   message?: string,
+ *   targetStep?: string,
  *   wantSchedule?: boolean,
  *   flowContext?: object,
  * }>}
@@ -64,6 +65,18 @@ export async function resolveUnexpectedMessage(params) {
     return {
       kind: "continue_value",
       mappedValue: coach.mappedValue,
+      flowContext: coach.flowContext || flowContext,
+    };
+  }
+  if (
+    coach.action === "propose_navigate" ||
+    coach.action === "navigate" ||
+    coach.action === "cancel_navigate"
+  ) {
+    return {
+      kind: coach.action,
+      targetStep: coach.targetStep,
+      message: coach.message,
       flowContext: coach.flowContext || flowContext,
     };
   }
@@ -184,6 +197,15 @@ export async function handleUnknownInActiveFlow(params) {
         mappedValue: coach.mappedValue,
         flowContext: coach.flowContext || flowContext,
         coachAction: "continue_value",
+      };
+    }
+    if (coach.action === "propose_navigate" || coach.action === "navigate" || coach.action === "cancel_navigate") {
+      return {
+        handled: true,
+        coachAction: coach.action,
+        coachMessage: coach.message,
+        targetStep: coach.targetStep,
+        flowContext: coach.flowContext || flowContext,
       };
     }
     if (coach.action === "answer") {

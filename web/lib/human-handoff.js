@@ -80,7 +80,7 @@ export function processConfusionReply(number, baseMessage, instance = "") {
  */
 export function offerHumanChoice(
   number,
-  baseMessage = "Não tenho essa informação cadastrada com segurança.",
+  baseMessage = "Não tenho essa informação com segurança agora.",
   instance = "",
 ) {
   const key = makeScopeKey(instance, number);

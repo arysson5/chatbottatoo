@@ -4,9 +4,17 @@ import { answerTattooFaq, isGeminiConfigured } from "@/lib/gemini";
 import { resolveOptionChoice } from "@/lib/conversation-intent";
 import { askClientName, startClientDataFlow } from "@/lib/flows/client-data-flow";
 import { resetConfusion, offerHumanChoice } from "@/lib/human-handoff";
+import { resolveUnexpectedMessage } from "@/lib/flow-router";
+import {
+  getPendingNavConfirm,
+  detectNavigationIntent,
+} from "@/lib/flow-navigation";
+
+const FAQ_UNKNOWN_CLIENT_MSG =
+  "Boa pergunta! Não tenho essa resposta com segurança agora. Quer que um atendente humano te ajude?";
 
 export async function handleFaqFlow(ctx) {
-  const { number, text, db, sendText, clientName, instance = "" } = ctx;
+  const { number, text, db, sendText, clientName, instance = "", memory } = ctx;
   const schedule = getPendingSchedule(db, number, instance);
   if (!schedule || schedule.step !== "faq") return false;
 
@@ -14,6 +22,49 @@ export async function handleFaqFlow(ctx) {
   if (!trimmed) {
     await sendText(number, FAQ_MENU_TEXT);
     return true;
+  }
+
+  // Confirmação de navegação ou comando de voltar/corrigir (caso do print)
+  if (getPendingNavConfirm(number, instance) || detectNavigationIntent(trimmed, {
+    state: "faq_pos_orcamento",
+    step: "faq",
+    options: [
+      { id: 1, label: "Agendar agora" },
+      { id: 2, label: "Outra pergunta" },
+    ],
+  })) {
+    const unexpected = await resolveUnexpectedMessage({
+      db,
+      number,
+      text: trimmed,
+      instance,
+      memory,
+      flowContext: {
+        state: "faq_pos_orcamento",
+        step: "faq",
+        description: "Cliente tirando dúvidas pós-orçamento sobre tattoo tribal.",
+        options: [
+          { id: 1, label: "Agendar agora" },
+          { id: 2, label: "Outra pergunta" },
+        ],
+      },
+      fallbackReminder: FAQ_MENU_TEXT,
+    });
+    if (
+      unexpected.kind === "propose_navigate" ||
+      unexpected.kind === "cancel_navigate"
+    ) {
+      if (unexpected.message) await sendText(number, unexpected.message);
+      return true;
+    }
+    if (unexpected.kind === "navigate" && unexpected.targetStep && ctx.onNavigate) {
+      await ctx.onNavigate(unexpected.targetStep);
+      return true;
+    }
+    if (unexpected.message && unexpected.kind !== "select_option") {
+      await sendText(number, unexpected.message);
+      return true;
+    }
   }
 
   const choice = await resolveOptionChoice({
@@ -64,13 +115,39 @@ export async function handleFaqFlow(ctx) {
     );
   }
   if (!answer) {
+    // Tenta navegação / coach antes do handoff genérico
+    const unexpected = await resolveUnexpectedMessage({
+      db,
+      number,
+      text: trimmed,
+      instance,
+      memory,
+      flowContext: {
+        state: "faq_pos_orcamento",
+        step: "faq",
+        description: "Cliente tirando dúvidas pós-orçamento.",
+        options: [
+          { id: 1, label: "Agendar agora" },
+          { id: 2, label: "Outra pergunta" },
+        ],
+      },
+      fallbackReminder: FAQ_MENU_TEXT,
+    });
+    if (unexpected.kind === "propose_navigate" || unexpected.kind === "cancel_navigate") {
+      if (unexpected.message) await sendText(number, unexpected.message);
+      return true;
+    }
+    if (unexpected.kind === "navigate" && unexpected.targetStep && ctx.onNavigate) {
+      await ctx.onNavigate(unexpected.targetStep);
+      return true;
+    }
+    if (unexpected.kind === "answer" && unexpected.message) {
+      await sendText(number, unexpected.message);
+      return true;
+    }
     await sendText(
       number,
-      offerHumanChoice(
-        number,
-        "Boa pergunta! Não tenho essa resposta cadastrada com segurança no painel.",
-        instance,
-      ),
+      offerHumanChoice(number, FAQ_UNKNOWN_CLIENT_MSG, instance),
     );
     return true;
   }

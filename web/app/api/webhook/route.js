@@ -31,6 +31,11 @@ import {
 } from "@/lib/human-handoff";
 import { detectFlowContext, getFlowReminderMessage } from "@/lib/flow-context";
 import {
+  applyFlowNavigation,
+  getPendingNavConfirm,
+  resolveNavConfirmReply,
+} from "@/lib/flow-navigation";
+import {
   resolveOriginFromInstance,
   isManagedInstance,
   extractInstanceDigits,
@@ -278,6 +283,9 @@ async function sendUnexpectedInStep({
   description,
   options = [],
   fallbackReminder,
+  evolutionBase,
+  apiKey,
+  catalogPrompt,
 }) {
   const unexpected = await resolveUnexpectedMessage({
     db,
@@ -294,10 +302,71 @@ async function sendUnexpectedInStep({
     fallbackReminder:
       fallbackReminder || getFlowReminderMessage({ step }),
   });
+  if (
+    unexpected.kind === "propose_navigate" ||
+    unexpected.kind === "cancel_navigate"
+  ) {
+    if (unexpected.message) {
+      await sendCapped(number, unexpected.message);
+    }
+    return unexpected;
+  }
+  if (unexpected.kind === "navigate" && unexpected.targetStep) {
+    await fulfillNavigation({
+      targetStep: unexpected.targetStep,
+      number,
+      instance,
+      db,
+      sendCapped,
+      evolutionBase,
+      apiKey,
+      catalogPrompt,
+    });
+    return unexpected;
+  }
   if (unexpected.message) {
     await sendCapped(number, unexpected.message);
   }
   return unexpected;
+}
+
+/**
+ * Aplica navegação confirmada e reabre o passo com prompt do fluxo real.
+ */
+async function fulfillNavigation({
+  targetStep,
+  number,
+  instance,
+  db,
+  sendCapped,
+  evolutionBase,
+  apiKey,
+  catalogPrompt,
+}) {
+  const result = await applyFlowNavigation({
+    targetStep,
+    number,
+    instance,
+    maps: getInteractionMaps(),
+    db,
+    catalogPrompt:
+      catalogPrompt ||
+      "Agora me envie os números das áreas da imagem que você quer tatuar (ex: 1, 4 e 7) 📍",
+  });
+  if (result.needsCatalog && evolutionBase && apiKey) {
+    await sendCatalogFlow(
+      evolutionBase,
+      instance,
+      apiKey,
+      number,
+      result.message,
+    );
+    return result;
+  }
+  if (result.message) {
+    await sendCapped(number, result.message);
+  }
+  return result;
 }
 
 /**
@@ -504,6 +573,9 @@ async function trySchedulingFlows(
   pricingTable,
 ) {
   const send = (n, msg) => sendText(baseUrl, instance, apiKey, n, msg);
+  const catalogPrompt =
+    settings?.catalogPrompt?.trim() ||
+    "Agora me envie os números das áreas da imagem que você quer tatuar (ex: 1, 4 e 7) 📍";
   return processSchedulingFlows({
     number,
     text,
@@ -517,6 +589,19 @@ async function trySchedulingFlows(
     instance,
     apiKey,
     sendText: send,
+    memory: getFlowMemory(),
+    onNavigate: async (targetStep) => {
+      await fulfillNavigation({
+        targetStep,
+        number,
+        instance,
+        db,
+        sendCapped: send,
+        evolutionBase: baseUrl,
+        apiKey,
+        catalogPrompt,
+      });
+    },
   });
 }
 
@@ -1343,6 +1428,39 @@ export async function POST(request) {
 
         await sendCapped(number, HUMAN_OFFER_BLOCK);
         continue;
+      }
+
+      // Confirmação pendente de navegação (Sim/Não) — antes dos fluxos
+      if (getPendingNavConfirm(number, instance) && normalizedText) {
+        const navReply = resolveNavConfirmReply(normalizedText, number, instance);
+        if (navReply.action === "navigate" && navReply.targetStep) {
+          const freshDb = await readDb();
+          await fulfillNavigation({
+            targetStep: navReply.targetStep,
+            number,
+            instance,
+            db: freshDb,
+            sendCapped,
+            evolutionBase,
+            apiKey,
+            catalogPrompt:
+              settings?.catalogPrompt?.trim() ||
+              "Agora me envie os números das áreas da imagem que você quer tatuar (ex: 1, 4 e 7) 📍",
+          });
+          continue;
+        }
+        if (navReply.action === "cancel_navigate") {
+          const ctx = detectFlowContext(db, number, getFlowMemory(), instance);
+          await sendCapped(
+            number,
+            `${navReply.message}\n\n${getFlowReminderMessage(ctx)}`,
+          );
+          continue;
+        }
+        if (navReply.message) {
+          await sendCapped(number, navReply.message);
+          continue;
+        }
       }
 
       if (hasSchedulingFlow(db, number, instance) || isInPixFlow(db, number, instance)) {
@@ -2214,6 +2332,29 @@ Ação recomendada:
             });
             continue;
           }
+        }
+
+        if (
+          flowResult.coachAction === "propose_navigate" ||
+          flowResult.coachAction === "cancel_navigate"
+        ) {
+          if (flowResult.coachMessage) {
+            await sendCapped(number, flowResult.coachMessage);
+          }
+          continue;
+        }
+        if (flowResult.coachAction === "navigate" && flowResult.targetStep) {
+          await fulfillNavigation({
+            targetStep: flowResult.targetStep,
+            number,
+            instance,
+            db,
+            sendCapped,
+            evolutionBase,
+            apiKey,
+            catalogPrompt,
+          });
+          continue;
         }
 
         if (
